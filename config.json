@@ -1,9 +1,55 @@
 {
   "providers": {
     "llm": "groq",
-    "tts": "gemini",
+    "tts": "pollinations",
+    "tts_fallbacks": ["edge", "groq"],
     "stt": "groq",
-    "image": ["gemini", "local", "replicate", "fal"]
+    "image": ["pollinations", "gemini", "local", "replicate", "fal"]
+  },
+  "pollinations_tts": {
+    "base_url": "https://gen.pollinations.ai",
+    "model": "microsoft/mai-voice-2.1",
+    "fallback_models": [
+      "microsoft/mai-voice-2.1-flash",
+      "openai/tts-1"
+    ],
+    "tts_voices": [
+      "en-US-Olivia",
+      "en-US-Iris",
+      "en-US-Sage",
+      "en-US-Grant",
+      "en-GB-Emily",
+      "nova",
+      "shimmer"
+    ],
+    "tts_format": "mp3",
+    "max_chars": 4000,
+    "max_retries": 3
+  },
+  "edge": {
+    "tts_voices": [
+      "en-US-AriaNeural",
+      "en-US-GuyNeural",
+      "en-US-JennyNeural",
+      "en-US-DavisNeural",
+      "en-GB-SoniaNeural",
+      "en-GB-RyanNeural"
+    ],
+    "tts_format": "mp3",
+    "pitch": "+0Hz",
+    "max_retries": 2
+  },
+  "pollinations": {
+    "base_url": "https://gen.pollinations.ai",
+    "model": "black-forest-labs/flux.1-schnell",
+    "max_retries": 3
+  },
+  "narration": {
+    "enabled": true,
+    "chunk_chars": 420,
+    "min_shot_seconds": 2.0,
+    "max_shot_seconds": 8.0,
+    "max_retries": 2
   },
   "local": {
     "model": "stabilityai/sd-turbo",
@@ -32,7 +78,7 @@
       "daniel",
       "troy"
     ],
-    "tts_max_chars": 200,
+    "tts_max_chars": 420,
     "tts_format": "wav",
     "whisper_model": "whisper-large-v3-turbo"
   },
@@ -141,5 +187,48 @@
     "width": 720,
     "height": 1280,
     "fps": 24
+  },
+  "caption": {
+    "position": "center",
+    "font_size": 70,
+    "padding": 70,
+    "line_count": 1
+  },
+  "presets": {
+    "shorts": {
+      "video": {
+        "width": 720,
+        "height": 1280,
+        "fps": 24
+      },
+      "storyboard": {
+        "max_scenes": 14
+      },
+      "caption": {
+        "position": "center",
+        "font_size": 70,
+        "padding": 70,
+        "line_count": 1
+      }
+    },
+    "youtube": {
+      "video": {
+        "width": 1280,
+        "height": 720,
+        "fps": 24
+      },
+      "storyboard": {
+        "max_scenes": 24
+      },
+      "narration": {
+        "min_shot_seconds": 1.6
+      },
+      "caption": {
+        "position": "bottom",
+        "font_size": 60,
+        "padding": 40,
+        "line_count": 1
+      }
+    }
   }
 }

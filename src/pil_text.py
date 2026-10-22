@@ -146,3 +146,26 @@ def create_text(
         stroke_width=stroke_width,
         kerning=kerning,
     )
+
+
+if __name__ == "__main__":
+    os.makedirs("data/_test/captions", exist_ok=True)
+    font = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "font",
+        "TitanOne.ttf",
+    )
+
+    clip = create_text(
+        "The Midnight Cipher: it was never a lock,",
+        70,
+        "white",
+        font,
+        stroke_color="black",
+        stroke_width=2,
+    )
+    frame = clip.get_frame(0)
+    clip.close()
+
+    Image.fromarray(frame).save("data/_test/captions/caption.png")
+    print("wrote data/_test/captions/caption.png")

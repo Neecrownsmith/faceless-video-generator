@@ -5,6 +5,7 @@ provider agnostic. Groq, OpenAI, Felo and Gemini are all OpenAI-compatible or
 expose a small REST surface, so no extra SDK is required.
 """
 
+import asyncio
 import base64
 import io
 import os
@@ -74,9 +75,16 @@ def _atempo_chain(tempo: float) -> str:
 
 
 def concat_audio_files(
-    paths: List[str], output_path: str, tempo: Optional[float] = None
+    paths: List[str],
+    output_path: str,
+    tempo: Optional[float] = None,
+    sample_rate: Optional[int] = None,
 ) -> str:
-    """Join audio chunks into one file, optionally changing the tempo."""
+    """Join audio chunks into one file, optionally changing the tempo.
+
+    Providers emit different sample rates, and ffmpeg's concat filter refuses
+    to join mismatched inputs, so `sample_rate` normalizes everything first.
+    """
     exe = ffmpeg_exe()
     if not exe:
         raise RuntimeError("ffmpeg is not available")
@@ -87,13 +95,14 @@ def concat_audio_files(
     for path in paths:
         command.extend(["-i", path])
 
+    resample = f"aresample={sample_rate}," if sample_rate else ""
     count = len(paths)
     if count == 1:
-        graph = f"[0:a]{_atempo_chain(tempo) if tempo else 'anull'}[out]"
+        graph = f"[0:a]{resample}{_atempo_chain(tempo) if tempo else 'anull'}[out]"
     else:
         inputs = "".join(f"[{index}:a]" for index in range(count))
         graph = f"{inputs}concat=n={count}:v=0:a=1[cat]"
-        graph += f";[cat]{_atempo_chain(tempo) if tempo else 'anull'}[out]"
+        graph += f";[cat]{resample}{_atempo_chain(tempo) if tempo else 'anull'}[out]"
 
     command.extend(
         [
@@ -153,8 +162,9 @@ def _build_client(provider: str) -> Optional[OpenAI]:
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
         )
-    if provider == "gemini":
-        # Gemini is called through its native REST API, no SDK client needed.
+    if provider in ("gemini", "pollinations", "edge"):
+        # These are called through small REST surfaces (or a local client), so
+        # there is no OpenAI compatible SDK object to build.
         return None
     raise ValueError(f"Unsupported provider: {provider}")
 
@@ -178,7 +188,8 @@ def get_audio_extension(tts_provider: Optional[str] = None) -> str:
     """File extension matching the active TTS provider's output format."""
     config = load_config()
     provider = tts_provider or config.get("providers", {}).get("tts", "openai")
-    audio_format = config.get(provider, {}).get("tts_format", "mp3")
+    settings = config.get(f"{provider}_tts") or config.get(provider) or {}
+    audio_format = settings.get("tts_format", "mp3")
     return "wav" if audio_format == "wav" else "mp3"
 
 
@@ -291,12 +302,15 @@ def _gemini_retry_delay(response: Any) -> Optional[float]:
     return None
 
 
-def gemini_tts_bytes(text: str, voice: str) -> Optional[bytes]:
+def gemini_tts_bytes(text: str, voice: str, model: Optional[str] = None) -> Optional[bytes]:
     """Synthesize speech with a Gemini TTS model.
 
     Gemini's TTS models are available on the free tier, unlike its image
     models. Some of them return a WAV container directly, others return raw
     PCM that needs a header.
+
+    `model` pins a single model; the configured `tts_models` are tried
+    afterwards when it fails.
     """
     config = load_config()
     gemini_config = config["gemini"]
@@ -307,7 +321,12 @@ def gemini_tts_bytes(text: str, voice: str) -> Optional[bytes]:
 
     base_url = gemini_config["base_url"].rstrip("/")
     versions = gemini_config.get("api_versions", ["v1beta"])
-    models = gemini_config.get("tts_models") or [gemini_config.get("tts_model")]
+    models = [model] if model else []
+    models += [
+        name
+        for name in (gemini_config.get("tts_models") or [gemini_config.get("tts_model")])
+        if name not in models
+    ]
     max_retries = gemini_config.get("max_retries", 3)
     min_interval = float(gemini_config.get("tts_min_interval", 0) or 0)
 
@@ -429,6 +448,229 @@ def gemini_tts_bytes(text: str, voice: str) -> Optional[bytes]:
 
 
 # --------------------------------------------------------------------------- #
+# Pollinations text to speech
+# --------------------------------------------------------------------------- #
+
+# Models offered by Pollinations that are reachable on the free tier
+# (`paid_only: false` in https://gen.pollinations.ai/audio/models).
+POLLINATIONS_FREE_TTS_MODELS = [
+    "microsoft/mai-voice-2.1",
+    "microsoft/mai-voice-2.1-flash",
+    "openai/tts-1",
+    "openai/tts-1-hd",
+]
+
+# Voices accepted per model family on the Pollinations audio endpoint.
+DEFAULT_MAI_VOICE = "en-US-Olivia"
+OPENAI_TTS_VOICES = ["nova", "shimmer", "echo", "onyx", "fable", "alloy"]
+
+
+def pollinations_tts_bytes(
+    text: str,
+    voice: str,
+    model: Optional[str] = None,
+    speed: Optional[float] = None,
+) -> Optional[bytes]:
+    """Synthesize speech with Pollinations' OpenAI compatible audio endpoint.
+
+    The models that are not `paid_only` draw from the free Pollen allowance and
+    have no per day character cap, which is what makes them usable where Groq's
+    Orpheus free tier is limited to 3600 tokens a day.
+    """
+    config = load_config()
+    p_config = config.get("pollinations_tts", {})
+    base_url = (p_config.get("base_url") or "https://gen.pollinations.ai").rstrip("/")
+    api_key = os.getenv("POLLINATIONS_API_KEY")
+    if not api_key:
+        print("POLLINATIONS_API_KEY is not set; skipping Pollinations TTS.")
+        return None
+
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    max_chars = int(p_config.get("max_chars", 4000))
+    if len(text) > max_chars:
+        print(
+            f"Pollinations TTS input is {len(text)} characters, over the "
+            f"{max_chars} limit; truncating."
+        )
+        text = text[:max_chars]
+
+    retries = int(p_config.get("max_retries", 3))
+    audio_format = p_config.get("tts_format", "mp3")
+    if speed is None:
+        speech_rate = (config.get("tts") or {}).get("speech_rate")
+        speed = float(speech_rate) if speech_rate else 1.0
+
+    models = [model] if model else []
+    models += [
+        name
+        for name in p_config.get("fallback_models", [])
+        if name not in models
+    ]
+    if not models:
+        models = POLLINATIONS_FREE_TTS_MODELS
+
+    url = f"{base_url}/v1/audio/speech"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    # The MAI models only accept the `en-US-*` / `en-GB-*` voices and reject the
+    # `speed` parameter, while the OpenAI models only accept the six OpenAI
+    # voices and do support it. The voice is therefore adapted per model family
+    # instead of failing the whole fallback chain on a 400.
+    preferred_mai_voice = voice if voice not in OPENAI_TTS_VOICES else DEFAULT_MAI_VOICE
+    preferred_openai_voice = voice if voice in OPENAI_TTS_VOICES else OPENAI_TTS_VOICES[0]
+
+    for current_model in models:
+        is_openai = current_model.startswith("openai/")
+        payload = {
+            "model": current_model,
+            "input": text,
+            "voice": preferred_openai_voice if is_openai else preferred_mai_voice,
+            "response_format": audio_format,
+        }
+        if is_openai:
+            payload["speed"] = speed
+        for attempt in range(retries):
+            try:
+                response = requests.post(
+                    url, headers=headers, json=payload, timeout=180
+                )
+            except requests.RequestException as e:
+                print(
+                    f"Pollinations TTS request error (attempt {attempt + 1}/{retries}): {e}"
+                )
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                continue
+
+            if response.status_code == 200 and response.content:
+                print(
+                    f"Pollinations synthesized speech with {current_model} "
+                    f"({len(response.content)} bytes)."
+                )
+                return response.content
+
+            if response.status_code in (401, 402, 403):
+                print(
+                    "Pollinations TTS is unavailable for this key: "
+                    f"{response.status_code} {response.text[:300]}"
+                )
+                return None
+
+            if response.status_code == 400:
+                # Usually an unknown voice for that model; try the next model.
+                print(
+                    f"Pollinations rejected {current_model} "
+                    f"(400): {response.text[:200]}"
+                )
+                break
+
+            if response.status_code in (429, 500, 502, 503, 504):
+                if attempt < retries - 1:
+                    print(
+                        f"Pollinations TTS {response.status_code}, retrying "
+                        f"(attempt {attempt + 2}/{retries})"
+                    )
+                    time.sleep(2 ** attempt)
+                    continue
+                print(f"Pollinations TTS failed: {response.status_code}")
+                break
+
+            print(
+                f"Pollinations TTS error {response.status_code}: {response.text[:300]}"
+            )
+            break
+
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# edge-tts (Microsoft Edge read aloud, no key required)
+# --------------------------------------------------------------------------- #
+
+EDGE_TTS_VOICES = [
+    "en-US-AriaNeural",
+    "en-US-GuyNeural",
+    "en-US-JennyNeural",
+    "en-US-DavisNeural",
+    "en-GB-SoniaNeural",
+    "en-GB-RyanNeural",
+]
+
+
+def _edge_rate_string(speech_rate: Optional[float]) -> str:
+    """Turn 1.1 into "+10%", the format edge-tts expects."""
+    if not speech_rate:
+        return "+0%"
+    percent = int(round((float(speech_rate) - 1.0) * 100))
+    return f"{percent:+d}%"
+
+
+async def _edge_speak(text: str, voice: str, rate: str, pitch: str) -> bytes:
+    import edge_tts
+
+    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
+    buffer = bytearray()
+    async for chunk in communicate.stream():
+        if chunk.get("type") == "audio" and chunk.get("data"):
+            buffer.extend(chunk["data"])
+    return bytes(buffer)
+
+
+def edge_tts_bytes(
+    text: str,
+    voice: str,
+    rate: Optional[float] = None,
+    pitch: Optional[str] = None,
+) -> Optional[bytes]:
+    """Synthesize speech with edge-tts, which needs no API key.
+
+    This is the "always works" narration path: it only needs a network
+    connection and the `edge-tts` package. It is an unofficial client for the
+    Edge read aloud service, so it is used as a fallback rather than the
+    primary engine.
+    """
+    try:
+        import edge_tts  # noqa: F401
+    except ImportError:
+        print("edge-tts is not installed; skipping it (pip install edge-tts).")
+        return None
+
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    config = load_config()
+    e_config = config.get("edge", {})
+
+    if rate is None:
+        rate = (config.get("tts") or {}).get("speech_rate")
+    if pitch is None:
+        pitch = e_config.get("pitch", "+0Hz")
+
+    retries = int(e_config.get("max_retries", 2))
+    for attempt in range(retries):
+        try:
+            audio = asyncio.run(
+                _edge_speak(text, voice, _edge_rate_string(rate), pitch)
+            )
+            if audio:
+                print(f"edge-tts synthesized speech with {voice} ({len(audio)} bytes).")
+                return audio
+            print("edge-tts returned no audio data.")
+        except Exception as e:
+            print(f"edge-tts error (attempt {attempt + 1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Speech to text helpers
 # --------------------------------------------------------------------------- #
 
@@ -515,13 +757,21 @@ def transcribe_video(video_file: str, client: Optional[OpenAI] = None) -> List[D
 # Image providers
 # --------------------------------------------------------------------------- #
 
-def get_image_generator():
+def get_image_generator(only: Optional[str] = None):
     """Return a callable that produces image bytes for a prompt.
 
     `providers.image` may be a single provider name or an ordered list; each
     provider is tried in turn so a blocked free tier does not break the run.
+    Pass `only` to pin a single provider, which is what the manual comparison
+    entry point does.
     """
-    from api import fal_flux_api, felo_image_api, gemini_image_api, replicate_flux_api
+    from api import (
+        fal_flux_api,
+        felo_image_api,
+        gemini_image_api,
+        pollinations_image_api,
+        replicate_flux_api,
+    )
     from local_image import local_image_api
 
     config = load_config()
@@ -530,13 +780,21 @@ def get_image_generator():
         chain = [chain]
 
     registry = {
+        "pollinations": pollinations_image_api,
         "gemini": gemini_image_api,
         "felo": felo_image_api,
         "replicate": replicate_flux_api,
         "fal": fal_flux_api,
         "local": local_image_api,
     }
-    generators = [registry[name] for name in chain if name in registry]
+    if only:
+        if only not in registry:
+            raise ValueError(
+                f"Unknown image provider '{only}' (choose from {', '.join(registry)})"
+            )
+        generators = [registry[only]]
+    else:
+        generators = [registry[name] for name in chain if name in registry]
 
     def generate(prompt: str) -> Optional[bytes]:
         for generator in generators:
@@ -549,3 +807,23 @@ def get_image_generator():
         return None
 
     return generate
+
+
+if __name__ == "__main__":
+    config = load_config()
+
+    print(describe_providers())
+    for name in (
+        "GROQ_API_KEY",
+        "GEMINI_API_KEY",
+        "FELO_API_KEY",
+        "POLLINATIONS_API_KEY",
+        "REPLICATE_API_TOKEN",
+        "FAL_KEY",
+        "OPENAI_API_KEY",
+    ):
+        print(f"{name}: {'set' if os.getenv(name) else 'missing'}")
+
+    print("pollinations image:", config["pollinations"]["model"])
+    print("pollinations tts:  ", config["pollinations_tts"]["model"])
+    print("edge voices:       ", ", ".join(EDGE_TTS_VOICES))

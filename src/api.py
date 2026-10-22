@@ -7,7 +7,7 @@ import requests
 import replicate
 import fal_client
 
-from utils import load_config
+from utils import load_config, get_aspect_ratio, get_video_config
 
 
 # --------------------------------------------------------------------------- #
@@ -47,7 +47,7 @@ def replicate_flux_api(prompt: str, max_retries: int = 3) -> Optional[bytes]:
 
     payload = {
         "prompt": prompt,
-        "aspect_ratio": replicate_config["aspect_ratio"],
+        "aspect_ratio": get_aspect_ratio(),
         "num_inference_steps": replicate_config["num_inference_steps"],
         "disable_safety_checker": replicate_config["disable_safety_checker"],
         "guidance": replicate_config["guidance"],
@@ -93,7 +93,9 @@ def submit_fal_request(prompt: str, config: dict) -> Optional[str]:
             config["model"],
             arguments={
                 "prompt": prompt,
-                "image_size": config["image_size"],
+                "image_size": "landscape_16_9"
+                if get_aspect_ratio() == "16:9"
+                else config["image_size"],
                 "num_images": config["num_images"],
                 "num_inference_steps": config["num_inference_steps"],
                 "enable_safety_checker": config["enable_safety_checker"],
@@ -211,8 +213,8 @@ def felo_image_api(prompt: str, max_retries: Optional[int] = None) -> Optional[b
             "model": model,
             "prompt": prompt,
             "n": 1,
-            "aspect_ratio": felo_config.get("aspect_ratio"),
-            "size": felo_config.get("size"),
+            "aspect_ratio": get_aspect_ratio(),
+            "size": f"{get_video_config()['width']}x{get_video_config()['height']}",
         },
         {"model": model, "prompt": prompt, "n": 1},
     ]
@@ -317,7 +319,7 @@ def gemini_image_api(prompt: str, max_retries: Optional[int] = None) -> Optional
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                "aspectRatio": gemini_config.get("aspect_ratio", "9:16"),
+                "aspectRatio": get_aspect_ratio(),
                 "imageSize": gemini_config.get("image_size", "1K"),
             },
         },
@@ -377,3 +379,117 @@ def gemini_image_api(prompt: str, max_retries: Optional[int] = None) -> Optional
                     if attempt < retries - 1:
                         time.sleep(2 ** attempt)
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Pollinations
+# --------------------------------------------------------------------------- #
+
+def _extract_pollinations_image(payload: Dict[str, Any]) -> Optional[bytes]:
+    """Pull the generated image out of an OpenAI compatible images response."""
+    for item in payload.get("data", []) or []:
+        if item.get("b64_json"):
+            try:
+                return base64.b64decode(item["b64_json"])
+            except Exception as e:
+                print(f"Failed to decode Pollinations image payload: {e}")
+                return None
+        if item.get("url"):
+            try:
+                response = requests.get(item["url"], timeout=120)
+                response.raise_for_status()
+                return response.content
+            except Exception as e:
+                print(f"Failed to download Pollinations image: {e}")
+                return None
+    return None
+
+
+def pollinations_image_api(prompt: str, max_retries: Optional[int] = None) -> Optional[bytes]:
+    """Generate an image through Pollinations' OpenAI compatible images endpoint."""
+    config = load_config()
+    p_config = config.get("pollinations", {})
+    base_url = p_config.get("base_url", "https://gen.pollinations.ai").rstrip("/")
+    api_key = os.getenv("POLLINATIONS_API_KEY")
+    if not api_key:
+        print("POLLINATIONS_API_KEY is not set; skipping Pollinations image generation.")
+        return None
+
+    retries = max_retries or p_config.get("max_retries", 3)
+    video = get_video_config()
+    payload = {
+        "prompt": prompt,
+        "model": p_config.get("model", "black-forest-labs/flux.1-schnell"),
+        "size": f"{video['width']}x{video['height']}",
+        "n": 1,
+        "response_format": "b64_json",
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    url = f"{base_url}/v1/images/generations"
+
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=180)
+            if response.status_code == 400 and "size" in payload:
+                # Some models only accept their own dimensions; `normalize_image_file`
+                # crops and resizes whatever comes back, so drop ours and retry.
+                print("Pollinations rejected the requested size; retrying with the model default.")
+                payload.pop("size", None)
+                continue
+            if response.status_code in (401, 402, 403):
+                print(
+                    "Pollinations image generation is unavailable for this key: "
+                    f"{response.status_code} {response.text[:300]}"
+                )
+                return None
+            if response.status_code == 404:
+                print(f"Pollinations model not found: {payload.get('model')}")
+                return None
+            if response.status_code in (429, 500, 502, 503, 504):
+                if attempt < retries - 1:
+                    print(
+                        f"Pollinations image request {response.status_code}, retrying "
+                        f"(attempt {attempt + 2}/{retries})"
+                    )
+                    time.sleep(2 ** attempt)
+                    continue
+                print(f"Pollinations image request failed: {response.status_code}")
+                break
+            if response.status_code >= 400:
+                print(
+                    f"Pollinations image error {response.status_code}: {response.text[:400]}"
+                )
+                break
+
+            image = _extract_pollinations_image(response.json())
+            if image:
+                print(f"Pollinations generated an image with {payload.get('model')}.")
+                return image
+            print("Pollinations returned no image data.")
+            break
+        except requests.RequestException as e:
+            print(
+                f"Pollinations image request error (attempt {attempt + 1}/{retries}): {e}"
+            )
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    return None
+
+
+if __name__ == "__main__":
+    prompt = "a lantern in a dark library, cinematic, no text"
+
+    providers = {
+        "pollinations": pollinations_image_api,
+        "gemini": gemini_image_api,
+        "felo": felo_image_api,
+        "replicate": replicate_flux_api,
+        "fal": fal_flux_api,
+    }
+
+    for name, generate in providers.items():
+        data = generate(prompt)
+        print(name, len(data) if data else "failed")

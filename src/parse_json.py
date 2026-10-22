@@ -43,37 +43,7 @@ def extract_and_parse_json(response: str) -> dict:
     return {}
 
 
-# Test the function
-test_response1 = """Here's the detailed storyboard for the story "The Secret Mission of Sophie Scholl" in JSON format:
-
-{
-  "title": "The Secret Mission of Sophie Scholl",
-  "scenes": [
-    {
-      "scene_number": 1,
-      "description": "Sophie Scholl, a young German student, walks through the bustling streets of Munich in 1942."
-    },
-    {
-      "scene_number": 2,
-      "description": "Sophie meets with her brother Hans and their friend Christoph in a dimly lit café."
-    }
-  ]
-}"""
-
-test_response2 = """
-{
-  "title": "The Secret Mission of Sophie Scholl",
-  "scenes": [
-    {
-      "scene_number": 1,
-      "description": "Sophie Scholl, a young German student, walks through the bustling streets of Munich in 1942."
-    },
-    {
-      "scene_number": 2,
-      "description": "Sophie meets with her brother Hans and their friend Christoph in a dimly lit café."
-    }
-  ]
-}"""
-
-result = extract_and_parse_json(test_response1)
-print(result)
+if __name__ == "__main__":
+    print(extract_and_parse_json('Here: {"title": "A {curly} affair", "scenes": []}'))
+    print(extract_and_parse_json('```json\n{"title": "Fenced"}\n```'))
+    print(extract_and_parse_json("no json here"))

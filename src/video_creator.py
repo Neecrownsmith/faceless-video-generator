@@ -28,6 +28,7 @@ from audio_generator import generate_audio  # noqa: E402
 from transitions import zoom  # noqa: E402
 import shortcap  # noqa: E402
 from providers import ensure_ffmpeg_on_path, ffmpeg_exe, transcribe_video  # noqa: E402
+from utils import get_caption_config, get_video_config  # noqa: E402
 
 
 def _patch_shortcap() -> None:
@@ -97,9 +98,10 @@ ensure_ffmpeg_on_path()
 
 
 def _caption_options():
+    caption = get_caption_config()
     return {
         "font": os.path.join(font_path, "TitanOne.ttf"),
-        "font_size": 70,
+        "font_size": caption["font_size"],
         "font_color": "white",
         "stroke_width": 3,
         "stroke_color": "black",
@@ -107,9 +109,9 @@ def _caption_options():
         "shadow_blur": 0.1,
         "highlight_current_word": True,
         "word_highlight_color": "yellow",
-        "line_count": 1,
-        "padding": 70,
-        "position": "center",
+        "line_count": caption["line_count"],
+        "padding": caption["padding"],
+        "position": caption["position"],
     }
 
 
@@ -151,7 +153,21 @@ def add_subtitles(output_file, output_file_subtitle):
         shutil.copyfile(output_file, output_file_subtitle)
 
 
-def create_video(client, storyboard_project, output_file, audio_dir, voice_name):
+def create_video(client, storyboard_project, output_file, audio_dir, voice_name,
+                 timeline=None, narration_track=None, subtitles=True):
+    """Assemble the video.
+
+    When a timeline and a narration track are supplied the images are timed
+    against the real audio, which decouples how many pictures the video has
+    from how the narration was chunked. Without them the original behaviour -
+    one scene, one request, one clip - is used.
+    """
+    if timeline and narration_track:
+        _create_video_from_timeline(
+            storyboard_project, output_file, timeline, narration_track, subtitles
+        )
+        return
+
     clips = []
     for scene in storyboard_project['storyboards']:
         # Generate audio for the subtitle
@@ -192,6 +208,91 @@ def create_video(client, storyboard_project, output_file, audio_dir, voice_name)
         raise RuntimeError("No clips were produced; cannot create the video.")
 
     final_clip = concatenate_videoclips(clips)
-    final_clip.write_videofile(output_file, fps=24)
+    final_clip.write_videofile(output_file, fps=get_video_config()["fps"])
 
-    add_subtitles(output_file, output_file.replace('.mp4', '_subtitle.mp4'))
+    if subtitles:
+        add_subtitles(output_file, output_file.replace('.mp4', '_subtitle.mp4'))
+
+
+def _create_video_from_timeline(storyboard_project, output_file, timeline, narration_track,
+                                subtitles=True):
+    """Render silent image clips and attach one merged narration track."""
+    storyboards = storyboard_project['storyboards']
+    clips = []
+
+    for entry in timeline:
+        scene = storyboards[entry['scene_index']]
+        image_file = scene.get('image')
+        if not image_file or not os.path.exists(image_file):
+            print(f"Skipping scene {scene.get('scene_number')}: image file missing.")
+            continue
+
+        duration = float(entry.get('duration') or 0)
+        if duration <= 0:
+            continue
+
+        clip = ImageClip(image_file).set_duration(duration)
+
+        transition_type = scene.get('transition_type')
+        if transition_type == 'zoom-in':
+            clip = zoom(clip)
+        elif transition_type == 'zoom-out':
+            clip = zoom(clip, mode='out')
+
+        clips.append(clip)
+
+    if not clips:
+        raise RuntimeError("No clips were produced; cannot create the video.")
+
+    final_clip = concatenate_videoclips(clips)
+
+    if narration_track and os.path.exists(narration_track):
+        narration_clip = AudioFileClip(narration_track)
+        # The timeline is measured from the same audio, so any gap here is a
+        # rounding remainder rather than a missing section of narration.
+        if final_clip.duration > narration_clip.duration + 0.05:
+            print(
+                f"Video is {final_clip.duration - narration_clip.duration:.2f}s longer "
+                "than the narration; the tail will be silent."
+            )
+        final_clip = final_clip.set_audio(narration_clip)
+    else:
+        print("No narration track was supplied; rendering the video silent.")
+
+    final_clip.write_videofile(output_file, fps=get_video_config()["fps"])
+
+    if subtitles:
+        add_subtitles(output_file, output_file.replace('.mp4', '_subtitle.mp4'))
+
+
+if __name__ == "__main__":
+    from PIL import Image
+
+    os.makedirs("data/_test/video", exist_ok=True)
+
+    images = []
+    for index, color in enumerate([(24, 32, 64), (64, 32, 24), (24, 64, 48)], 1):
+        path = f"data/_test/video/frame_{index}.png"
+        Image.new("RGB", (640, 360), color).save(path)
+        images.append(path)
+
+    project = {
+        "storyboards": [
+            {"scene_number": index, "image": path, "transition_type": "zoom-in"}
+            for index, path in enumerate(images, 1)
+        ]
+    }
+    timeline = [
+        {
+            "scene_index": index,
+            "scene_number": index + 1,
+            "start": 2.0 * index,
+            "duration": 2.0,
+        }
+        for index in range(len(images))
+    ]
+
+    _create_video_from_timeline(
+        project, "data/_test/video/demo.mp4", timeline, None, subtitles=False
+    )
+    print("wrote data/_test/video/demo.mp4")

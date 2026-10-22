@@ -473,7 +473,7 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         """,
     }
 
-    prompt = f"""Based on the following {story_type}, create a detailed storyboard with up to {max_scenes} scenes.
+    prompt = f"""Based on the following {story_type}, create a detailed storyboard with {max_scenes} scenes.
 
         Title: {title}
         {"Character full Names: " + ', '.join(character_names) if character_names else ""}
@@ -494,9 +494,11 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         - Include every sentence from the original text in the subtitles, maintaining the correct order across all scenes.
         - Each subtitle must be unique; do not repeat content in multiple scenes.
         - For partial sentences at scene boundaries, include the fragment and continue it in the next scene's subtitles.
-        - EVERY SCENE MUST HAVE NON-EMPTY SUBTITLES. If you run out of story text, do not create additional scenes.
+        - EVERY SCENE MUST HAVE NON-EMPTY SUBTITLES.
+        - Return exactly {max_scenes} scenes, numbered 1 to {max_scenes}.
+        - The narration is read continuously, so scene boundaries only decide where the picture changes. To reach {max_scenes}, split longer sentences across several scenes at clause boundaries - never in the middle of a clause or a word.
+        - Keep each scene's subtitles to a short phrase (a few words) so the picture keeps changing.
         - Ensure that the scenes flow logically and capture the essence of the {story_type}.
-        - The total number of scenes should not exceed {max_scenes}.
         - When using a character's name in possessive form (e.g., "Character's") in the description,
           surround it with double curly braces {{{{ }}}} if it's not referring to the character's appearance.
           For example: "{{{{Giovanni's}}}} workshop" or "The mysterious figure stood at the entrance of {{{{Giovanni's}}}} laboratory."
@@ -590,3 +592,20 @@ def generate_fun_facts_storyboard(client, title: str, story: str) -> Dict[str, A
 
 def generate_life_pro_tips_storyboard(client, title: str, story: str) -> Dict[str, Any]:
     return generate_storyboard(client, title, story, "life pro tips")
+
+
+if __name__ == "__main__":
+    from providers import get_llm_client
+
+    client = get_llm_client()
+
+    title, description, story = generate_story_and_title(client, "Mystery")
+    print(title)
+    print(description)
+    print(story)
+
+    characters = generate_characters(client, story)
+    project = generate_general_storyboard(
+        client, title, story, [character["name"] for character in characters]
+    )
+    print(project)

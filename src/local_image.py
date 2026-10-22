@@ -78,9 +78,20 @@ def local_image_api(prompt: str, max_retries: int = 1) -> Optional[bytes]:
         print(f"Could not load the local image model: {e}")
         return None
 
-    width = int(config.get("width", 576))
-    height = int(config.get("height", 1024))
-    steps = int(config.get("steps", 4))
+    width = int(config.get("width", 0) or 0)
+    height = int(config.get("height", 0) or 0)
+    if not width or not height:
+        # Derive a size that matches the video aspect ratio while keeping the
+        # pixel count low enough to render quickly on a CPU.
+        from utils import get_video_config
+
+        video = get_video_config()
+        target_pixels = float(config.get("max_pixels", 590000))
+        scale = (target_pixels / max(1, video["width"] * video["height"])) ** 0.5
+        width = max(64, int(round(video["width"] * scale / 64)) * 64)
+        height = max(64, int(round(video["height"] * scale / 64)) * 64)
+
+    steps = int(config.get("steps", 1))
     guidance = float(config.get("guidance_scale", 0.0))
 
     for attempt in range(max_retries):
@@ -102,13 +113,12 @@ def local_image_api(prompt: str, max_retries: int = 1) -> Optional[bytes]:
 
 
 
-if __name__=='__main__':
-    # Test the local image generation
-    prompt = "A fantasy landscape with mountains and a river"
-    image_bytes = local_image_api(prompt)
+if __name__ == "__main__":
+    import os
+
+    os.makedirs("data/_test/local", exist_ok=True)
+    image_bytes = local_image_api("A fantasy landscape with mountains and a river")
     if image_bytes:
-        with open("output.png", "wb") as f:
-            f.write(image_bytes)
-        print("Image generated and saved as output.png")
-    else:
-        print("Image generation failed.")
+        with open("data/_test/local/output.png", "wb") as handle:
+            handle.write(image_bytes)
+        print("wrote data/_test/local/output.png")

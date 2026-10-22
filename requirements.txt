@@ -47,6 +47,10 @@ shortcap==1.0.5
 openai==1.61.1
 numpy==1.26.4
 
+# Free TTS fallback that needs no API key (unofficial Edge read-aloud client).
+# It only pulls aiohttp/tabulate, so the numpy pin above is unaffected.
+edge-tts==7.3.1
+
 # Local image generation (the "local" provider). Only needed when no image
 # API key is configured. The model weights are downloaded on first use.
 diffusers==0.31.0

@@ -1,4 +1,3 @@
-import argparse
 import json
 import os
 import tempfile
@@ -239,39 +238,5 @@ def test_video_from_images(script_dir, story_dir):
     print(f"Video created: {video_path}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Faceless video generator helpers.")
-    parser.add_argument(
-        "--smoke", action="store_true", help="Run a provider smoke test."
-    )
-    parser.add_argument(
-        "--with-image", action="store_true",
-        help="Include an image generation attempt in the smoke test.",
-    )
-    parser.add_argument(
-        "--text-to-image", action="store_true",
-        help="Regenerate images for an existing story.",
-    )
-    parser.add_argument(
-        "--story-dir", default=None,
-        help="Directory of an existing storyboard project (used with --video).",
-    )
-    parser.add_argument(
-        "--video", action="store_true",
-        help="Rebuild the video from an existing storyboard project.",
-    )
-    args, _ = parser.parse_known_args()
-
-    if args.smoke:
-        raise SystemExit(smoke_test(with_image=args.with_image))
-
-    if args.text_to_image:
-        test_text_to_image(SCRIPT_DIR)
-
-    if args.video:
-        story_dir = args.story_dir or os.path.join(SCRIPT_DIR, "../data/Images")
-        test_video_from_images(SCRIPT_DIR, os.path.abspath(story_dir))
-
-
 if __name__ == "__main__":
-    main()
+    raise SystemExit(smoke_test(with_image=False))

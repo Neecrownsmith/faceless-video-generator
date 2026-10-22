@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 import math
 import numpy
+import os
 import cv2
 
 
@@ -81,3 +82,25 @@ def zoom(clip, mode="in", position="center", speed=3):
         return frame
 
     return clip.fl(main)
+
+
+if __name__ == "__main__":
+    os.makedirs("data/_test/transitions", exist_ok=True)
+    Image.new("RGB", (640, 360), (28, 34, 58)).save(
+        "data/_test/transitions/source.png"
+    )
+
+    effects = {
+        "zoom-in": lambda clip: zoom(clip),
+        "zoom-out": lambda clip: zoom(clip, mode="out"),
+        "fade": lambda clip: fade(clip, duration=0.5),
+        "shake": lambda clip: shake(clip),
+    }
+
+    for name, effect in effects.items():
+        clip = ImageClip("data/_test/transitions/source.png").set_duration(2).set_fps(24)
+        effect(clip).write_videofile(
+            f"data/_test/transitions/{name}.mp4", fps=24, logger=None
+        )
+        clip.close()
+        print("wrote data/_test/transitions/" + name + ".mp4")

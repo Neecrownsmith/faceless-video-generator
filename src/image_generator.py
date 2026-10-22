@@ -100,3 +100,25 @@ def generate_and_download_images(
     print(f"generate_and_download_images execution time: {execution_time:.2f} seconds")
 
     return image_files
+
+
+if __name__ == "__main__":
+    from providers import get_image_generator
+
+    prompt = (
+        "a crumbling gothic hall at night, moonlight through a tall arched "
+        "window, dust motes in the air, wide cinematic shot | cinematic"
+    )
+
+    os.makedirs("data/_test/images", exist_ok=True)
+    for provider in ("pollinations", "gemini", "local"):
+        data = get_image_generator(only=provider)(prompt)
+        if not data:
+            print(provider, "failed")
+            continue
+
+        path = f"data/_test/images/{provider}.png"
+        with open(path, "wb") as handle:
+            handle.write(data)
+        normalize_image_file(path)
+        print(provider, "->", path)

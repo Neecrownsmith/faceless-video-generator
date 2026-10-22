@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import json
 import sys
@@ -60,6 +60,11 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
         else:
             merged[key] = value
     return merged
+
+
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Public wrapper around the config merge."""
+    return _deep_merge(base, override)
 
 
 def set_config_overrides(overrides: Optional[Dict[str, Any]]) -> None:
@@ -148,6 +153,11 @@ def _retry_delay(error, attempt: int) -> float:
     if message_delay:
         delay = max(delay, message_delay)
     return min(delay, 180)
+
+
+def retry_delay(error, attempt: int) -> float:
+    """Public wrapper around the backoff calculation."""
+    return _retry_delay(error, attempt)
 
 
 def call_openai_api(client, messages, max_retries=3, response_format=None, reasoning_effort=None):
@@ -301,13 +311,74 @@ def load_config(config_file='config.json'):
         config = _deep_merge(config, _CONFIG_OVERRIDES)
     return config
 
-def create_blank_image(filename, width=720, height=1280):
+
+def get_preset(name: str) -> Dict[str, Any]:
+    """Return the settings for a named preset, for example "youtube"."""
+    presets = load_config().get("presets", {})
+    if name not in presets:
+        raise ValueError(
+            f"Unknown preset '{name}'. Available: {', '.join(sorted(presets)) or 'none'}"
+        )
+    return presets[name]
+
+
+def get_video_config() -> Dict[str, int]:
+    """Output size and frame rate of the rendered video."""
+    video = load_config().get("video", {})
+    return {
+        "width": int(video.get("width", 720)),
+        "height": int(video.get("height", 1280)),
+        "fps": int(video.get("fps", 24)),
+    }
+
+
+def get_caption_config() -> Dict[str, Any]:
+    """Caption placement and styling."""
+    caption = load_config().get("caption", {})
+    return {
+        "position": caption.get("position", "center"),
+        "font_size": int(caption.get("font_size", 70)),
+        "padding": int(caption.get("padding", 70)),
+        "line_count": int(caption.get("line_count", 1)),
+    }
+
+
+def get_narration_config() -> Dict[str, Any]:
+    """Settings for how narration is chunked and paced against the images."""
+    narration = load_config().get("narration", {})
+    chunk_chars = int(narration.get("chunk_chars", 420))
+    min_shot = float(narration.get("min_shot_seconds", 2.0))
+    max_shot = float(narration.get("max_shot_seconds", 8.0))
+    return {
+        "enabled": bool(narration.get("enabled", True)),
+        "chunk_chars": max(80, chunk_chars),
+        "min_shot_seconds": max(0.5, min_shot),
+        "max_shot_seconds": max(min_shot, max_shot),
+        "max_retries": int(narration.get("max_retries", 2)),
+    }
+
+
+def get_aspect_ratio() -> str:
+    """Aspect ratio string matching the configured video size."""
+    video = get_video_config()
+    if video["width"] > video["height"]:
+        return "16:9"
+    if video["height"] > video["width"]:
+        return "9:16"
+    return "1:1"
+
+
+def create_blank_image(filename, width=None, height=None):
+    if width is None or height is None:
+        video = get_video_config()
+        width = width or video["width"]
+        height = height or video["height"]
     blank_image = Image.new('RGB', (width, height), color='black')
     blank_image.save(filename)
     print(f"Created blank image: {filename}")
 
 
-def normalize_image_file(filename, width=720, height=1280):
+def normalize_image_file(filename, width=None, height=None):
     """Center-crop and resize an image to the exact clip size.
 
     Every scene image has to end up with identical dimensions, otherwise
@@ -315,6 +386,10 @@ def normalize_image_file(filename, width=720, height=1280):
     return JPEG under a .png filename, so re-encoding here keeps the file
     honest.
     """
+    if width is None or height is None:
+        video = get_video_config()
+        width = width or video["width"]
+        height = height or video["height"]
     try:
         with Image.open(filename) as img:
             img = img.convert("RGB")
@@ -349,8 +424,8 @@ def get_voice_list(tts_provider: Optional[str] = None) -> List[str]:
     config = load_config()
     if tts_provider is None:
         tts_provider = config.get("providers", {}).get("tts", "openai")
-    provider_config = config.get(tts_provider, {})
-    voices = provider_config.get("tts_voices")
+    settings = config.get(f"{tts_provider}_tts") or config.get(tts_provider) or {}
+    voices = settings.get("tts_voices")
     if not voices:
         voices = config.get("openai", {}).get("tts_voices", [])
     return list(voices)
@@ -370,3 +445,13 @@ def pick_voice_name():
                 print("Invalid choice. Please try again.")
         except ValueError:
             print("Invalid input. Please enter a number.")
+
+
+if __name__ == "__main__":
+    config = load_config()
+
+    print("video:    ", get_video_config())
+    print("caption:  ", get_caption_config())
+    print("narration:", get_narration_config())
+    print("providers:", config["providers"])
+    print("voices:   ", get_voice_list())
