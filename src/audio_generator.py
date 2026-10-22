@@ -242,9 +242,13 @@ if __name__ == "__main__":
     from providers import _build_client, get_audio_extension
 
     sentence = (
-        'Eliot Finch, the archivist, had one rule: never trust a locked door. '
-        '"It\'s only a journal," he whispered - but the pages were warm. '
-        "At 3:17 a.m., the clock stopped."
+        "I was very scared of Carlos especially after he had just taken out "
+        "Adolpho and Roberto. He walked close to me and to be honest, I, at "
+        "that moment, thought I was living my last moments on earth. But he "
+        "surprised me by smiling. He put a friendly hand on my shoulder and "
+        "spoke. “What did you say was your name, friend?” He asked. “Ryan, "
+        "Sir.” I replied. I was shivering in spite of the fact that he had "
+        "called me ‘friend’."
     )
 
     voices = {
