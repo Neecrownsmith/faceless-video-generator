@@ -1,10 +1,10 @@
 import os
 import re
 import time
-import requests
-import replicate
-from typing import Optional, Dict, Any, List, Callable
-from utils import create_blank_image
+from typing import Any, Callable, Dict, List, Optional
+
+from utils import create_blank_image, normalize_image_file
+
 
 def generate_image(
     storyboard: Dict[str, Any],
@@ -14,12 +14,12 @@ def generate_image(
 ) -> Optional[bytes]:
     # Construct the prompt
     prompt = storyboard['description']
-    
+
     enhanced_prompt = f"{prompt} | {style}"
-    
+
     # Add character descriptions
     character_descriptions = []
-  
+
     for character in characters:
         name_forms = [
             character['name'].split()[0],  # First name
@@ -29,22 +29,22 @@ def generate_image(
             f"{character['name'].split()[0]}'",  # First name possessive (alternative)
             f"{character['name']}'"  # Full name possessive (alternative)
         ]
-        
+
         # Check if any non-bracketed form of the name is in the prompt
         if any(
-            form.lower() in prompt.lower() and 
+            form.lower() in prompt.lower() and
             f"{{{{{form.lower()}}}}}" not in prompt.lower()
             for form in name_forms
         ):
             desc = f"{character['name']}'s appearance: {character['ethnicity']} {character['gender']} {character['age']} {character['facial_features']} {character['body_type']} {character['hair_style']} {character['accessories']}"
             character_descriptions.append(desc)
-        
+
     if character_descriptions:
         enhanced_prompt += " | " + " | ".join(character_descriptions)
-    
+
     # Remove all bracketed content
     enhanced_prompt = re.sub(r'\{\{.*?\}\}', '', enhanced_prompt)
-    
+
     return image_generator_func(enhanced_prompt)
 
 
@@ -55,10 +55,10 @@ def generate_and_download_images(
     image_generator_func: Callable[[str], Optional[bytes]]
 ) -> List[str]:
     start_time = time.time()  # 记录开始时间
-    
+
     image_files = []
     characters = storyboard_project['characters']
-    
+
     for i, storyboard in enumerate(storyboard_project['storyboards']):
         image_content = generate_image(storyboard, characters, image_style, image_generator_func)
         if image_content:
@@ -67,6 +67,12 @@ def generate_and_download_images(
             try:
                 with open(image_filename, 'wb') as f:
                     f.write(image_content)
+                # Providers return different resolutions (and often JPEG), while
+                # moviepy needs every clip to have identical dimensions.
+                if not normalize_image_file(image_filename):
+                    print(
+                        f"Could not normalize image for scene {storyboard['scene_number']}"
+                    )
                 image_files.append(image_filename)
                 print(f"Image saved for scene {storyboard['scene_number']}")
             except IOError as e:
@@ -88,10 +94,9 @@ def generate_and_download_images(
                 create_blank_image(image_filename)
                 storyboard['image'] = image_filename
                 image_files.append(image_filename)
-    
-    end_time = time.time()  
-    execution_time = end_time - start_time  
-    print(f"generate_and_download_images execution time: {execution_time:.2f} seconds")  
-    
-    return image_files
 
+    end_time = time.time()
+    execution_time = end_time - start_time
+    print(f"generate_and_download_images execution time: {execution_time:.2f} seconds")
+
+    return image_files

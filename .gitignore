@@ -1,4 +1,4 @@
-# Ignore Python bytecode files
+﻿# Ignore Python bytecode files
 __pycache__/
 *.py[cod]
 
@@ -10,7 +10,14 @@ env/
 # Ignore environment variable files
 .env
 
+# Local model weights (downloaded on first use)
+models/
+
+# Test output from the local image generator
+output.png
+
 # Ignore data directory and its subdirectories
 data/
 
 .vscode
+

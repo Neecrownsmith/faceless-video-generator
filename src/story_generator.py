@@ -1,5 +1,5 @@
 from utils import (
-    call_openai_api, 
+    call_openai_api,
     create_empty_storyboard,
     load_config,
     STORY_TYPE_HASHTAGS
@@ -8,8 +8,131 @@ import re
 import logging
 import json
 from datetime import datetime
-from typing import Dict, Any, List, Tuple
-from utils import STORY_TYPE_HASHTAGS
+from typing import Any, Dict, List, Optional, Tuple
+
+
+CHARACTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "characters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "ethnicity": {"type": "string"},
+                    "gender": {"type": "string"},
+                    "age": {"type": "string"},
+                    "facial_features": {"type": "string"},
+                    "body_type": {"type": "string"},
+                    "hair_style": {"type": "string"},
+                    "accessories": {"type": "string"},
+                },
+                "required": [
+                    "name",
+                    "ethnicity",
+                    "gender",
+                    "age",
+                    "facial_features",
+                    "body_type",
+                    "hair_style",
+                    "accessories",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["characters"],
+    "additionalProperties": False,
+}
+
+STORYBOARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "storyboards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "scene_number": {"type": "integer"},
+                    "description": {"type": "string"},
+                    "subtitles": {"type": "string"},
+                    "transition_type": {
+                        "type": "string",
+                        "enum": ["zoom-in", "zoom-out"],
+                    },
+                },
+                "required": [
+                    "scene_number",
+                    "description",
+                    "subtitles",
+                    "transition_type",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["storyboards"],
+    "additionalProperties": False,
+}
+
+
+def _strip_code_fences(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def parse_json_response(response: str) -> Optional[Dict[str, Any]]:
+    """Parse a JSON object out of a model response."""
+    if not response:
+        return None
+
+    cleaned = _strip_code_fences(response)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse JSON: {e}")
+    else:
+        logging.error("No JSON object found in the response")
+    return None
+
+
+def call_json_api(
+    client, messages, schema: Dict[str, Any], name: str
+) -> Optional[Dict[str, Any]]:
+    """Call the model and parse a JSON object, preferring schema mode.
+
+    Providers such as Groq support strict JSON schema output, which removes the
+    need to dig JSON out of free form text. If the provider rejects it, the
+    call is retried with plain prompting.
+    """
+    response = call_openai_api(
+        client,
+        messages,
+        max_retries=1,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": name, "strict": True, "schema": schema},
+        },
+    )
+    parsed = parse_json_response(response) if response else None
+    if parsed is not None:
+        return parsed
+
+    print("Falling back to plain JSON parsing for this response.")
+    response = call_openai_api(client, messages, max_retries=2)
+    return parse_json_response(response) if response else None
+
 
 def get_story_type_guidelines(story_type: str) -> str:
     story_type_guidelines = {
@@ -22,7 +145,7 @@ def get_story_type_guidelines(story_type: str) -> str:
         6. Logical progression: Develop the philosophical argument or exploration in a clear, step-by-step manner.
         7. Open-ended conclusion: End with a thought-provoking statement or question that encourages further reflection.
 
-        Ensure the story or dialogue is accessible to a general audience while maintaining philosophical depth and rigor. 
+        Ensure the story or dialogue is accessible to a general audience while maintaining philosophical depth and rigor.
         Aim to stimulate critical thinking and encourage readers to question their assumptions about the topic.
         ''',
         "life pro tips": '''
@@ -52,7 +175,7 @@ def get_story_type_guidelines(story_type: str) -> str:
         3. Character development: Introduce one or more interesting characters and develop them throughout the joke.
         4. Setting: Establish a clear and vivid setting that enhances the humor of the situation.
         5. Pacing: Maintain a good rhythm throughout the joke, building tension and anticipation as you approach the punchline.
-        6. Misdirection: Use clever misdirection to set up unexpected twists or surprises.
+        6. Misdirection: Use clever misdirection to set up unexpected twists and surprises.
         7. Callbacks: If possible, incorporate callbacks to earlier elements of the joke for added humor.
         8. Punchline: Deliver a strong, unexpected, and hilarious punchline that ties everything together.
         9. Appropriate content: Ensure the joke is suitable for a general audience, avoiding offensive or overly controversial topics.
@@ -66,7 +189,7 @@ def get_story_type_guidelines(story_type: str) -> str:
         6. Language and style: Use simple, soothing language suitable for children, with some repetition or rhythmic elements.
         7. Moral or lesson: Include a subtle, positive message or gentle life lesson.
 
-        Ensure the story is calming and conducive to sleep, avoiding any scary elements or overly exciting adventures. 
+        Ensure the story is calming and conducive to sleep, avoiding any scary elements or overly exciting adventures.
         The story should help children wind down and prepare for sleep.
         ''',
         "urban legends": '''
@@ -82,7 +205,7 @@ def get_story_type_guidelines(story_type: str) -> str:
         Tell the story of an urban legend from a specific region or culture. Describe the legend in detail, including its origins, variations, and any real events that might have inspired it. Your goal is to create a chilling and captivating narrative that draws viewers into the world of urban folklore.
         ''',
     }
-    
+
     # Default guidelines for unspecified story types
     default_guidelines = '''
     1. Main character: Introduce a compelling protagonist with clear goals or desires.
@@ -92,20 +215,21 @@ def get_story_type_guidelines(story_type: str) -> str:
     5. Story structure: Follow a clear beginning (setup), middle (confrontation), and end (resolution).
     6. Language and style: Adapt the language to suit the {story_type}.
 
-    Ensure the story captures the reader's attention and imagination while staying true to the conventions of {story_type}. 
-    Be creative and surprising in your storytelling approach within the boundaries of the chosen story type. 
+    Ensure the story captures the reader's attention and imagination while staying true to the conventions of {story_type}.
+    Be creative and surprising in your storytelling approach within the boundaries of the chosen story type.
     '''
-    
+
     guidelines = story_type_guidelines.get(story_type.lower(), default_guidelines)
-    
+
     # Special case for 'Interesting History'
     if story_type.lower() == 'interesting history':
         guidelines += '''
-        Important: Ensure the story is based on real historical events and figures. 
+        Important: Ensure the story is based on real historical events and figures.
         Provide accurate historical details while maintaining an engaging narrative.
         '''
-    
+
     return guidelines.format(story_type=story_type)
+
 
 def create_story_prompt(story_type: str, char_limit: Tuple[int, int]) -> str:
     base_prompt = f'''
@@ -119,7 +243,7 @@ def create_story_prompt(story_type: str, char_limit: Tuple[int, int]) -> str:
 
     Important: Please ensure the total character count is between {char_limit[0]} and {char_limit[1]} characters.
 
-    Format your response as follows:
+    Format your response as follows, with no markdown code fences and no extra commentary:
     Title: [Your generated title]
 
     Description: [Your generated description]
@@ -127,6 +251,77 @@ def create_story_prompt(story_type: str, char_limit: Tuple[int, int]) -> str:
     [Your generated content]
     '''
     return base_prompt
+
+
+def parse_story_response(response: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Split a story response into title, description and body.
+
+    Reasoning models like gpt-oss sometimes narrate their plan before the
+    actual answer, so the labelled sections are located first and the plain
+    blank-line split is only a fallback.
+    """
+    if not response:
+        return None, None, None
+
+    text = _strip_code_fences(response)
+
+    # Reasoning models often narrate the requested format before answering,
+    # which produces decoy "Title:" / "Description:" labels. The real answer
+    # comes last, so try the labels from the end backwards.
+    for marker in reversed(list(re.finditer(r"Title:", text, re.IGNORECASE))):
+        remainder = text[marker.end():]
+        match = re.match(
+            r"\s*([^\n]+?)\s*\n+\s*Description:\s*([^\n]+?)\s*\n+(.+)",
+            remainder,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if match:
+            return (
+                match.group(1).strip(),
+                match.group(2).strip(),
+                match.group(3).strip(),
+            )
+
+    parts = text.split("\n\n", 2)
+    if len(parts) == 3:
+        title = parts[0].replace("Title:", "").strip()
+        description = parts[1].replace("Description:", "").strip()
+        content = parts[2].strip()
+        if title and description and content:
+            return title, description, content
+
+    return None, None, None
+
+
+def normalize_hashtags(description: str, story_type: str) -> str:
+    """Put the mapped hashtag first and #facelessvideos.app last.
+
+    The model sometimes repeats a tag or leaves an empty one behind, so the
+    list is cleaned up on the way through.
+    """
+    first_hashtag = STORY_TYPE_HASHTAGS[story_type].lstrip("#")
+
+    desc_parts = description.split("#", 1)
+    if len(desc_parts) <= 1:
+        return f"{description} #{first_hashtag} #facelessvideos.app"
+
+    desc_text = desc_parts[0].strip()
+    tags = [tag.strip() for tag in desc_parts[1].split("#")]
+    tags = [tag for tag in tags if tag and tag != "facelessvideos.app"]
+    ordered = [first_hashtag] + [
+        tag for tag in tags if tag.lower() != first_hashtag.lower()
+    ]
+
+    seen = set()
+    unique = []
+    for tag in ordered:
+        key = tag.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(tag)
+
+    hashtags = " ".join(f"#{tag}" for tag in unique)
+    return f"{desc_text} {hashtags} #facelessvideos.app"
 
 
 def generate_story_and_title(client, story_type: str) -> Tuple[str, str, str]:
@@ -156,32 +351,15 @@ def generate_story_and_title(client, story_type: str) -> Tuple[str, str, str]:
     ]
 
     response = call_openai_api(client, messages)
-    if response:
-        parts = response.split("\n\n", 2)
-        if len(parts) == 3:
-            title = parts[0].replace("Title: ", "").strip()
-            description = parts[1].replace("Description: ", "").strip()
-            content = parts[2].strip()
-            
-            # Ensure the first hashtag is from the STORY_TYPE_HASHTAGS mapping
-            first_hashtag = STORY_TYPE_HASHTAGS[story_type]
-            
-            # Split the description into text and hashtags
-            desc_parts = description.split('#', 1)
-            if len(desc_parts) > 1:
-                desc_text = desc_parts[0].strip()
-                existing_hashtags = desc_parts[1].strip()
-                # Remove #facelessvideos.app if it's present in existing_hashtags
-                existing_hashtags = existing_hashtags.replace("facelessvideos.app", "").strip()
-                # Combine hashtags, ensuring the mapped hashtag is first
-                all_hashtags = f"{first_hashtag} #{existing_hashtags} #facelessvideos.app"
-                description = f"{desc_text} {all_hashtags.strip()}"
-            else:
-                # If no hashtags were present, add the mapped hashtag and #facelessvideos.app
-                description += f" {first_hashtag} #facelessvideos.app"
-            
-            return title, description, content
-    return None, None, None
+    title, description, content = parse_story_response(response)
+    if not title or not description or not content:
+        return None, None, None
+
+    # Ensure the first hashtag is from the STORY_TYPE_HASHTAGS mapping
+    description = normalize_hashtags(description, story_type)
+
+    return title, description, content
+
 
 def generate_characters(client, story: str) -> List[Dict[str, str]]:
     prompt = f"""Based on the following story, create detailed descriptions for each character, including their name, ethnicity, gender, age, facial features, body type, hair style, and accessories. Focus on permanent or long-term attributes.
@@ -190,19 +368,21 @@ def generate_characters(client, story: str) -> List[Dict[str, str]]:
         {story}
 
         Output format:
-        [
-            {{
-                "name": "Character Name",
-                "ethnicity": "Character's Ethnicity",
-                "gender": "Character's Gender",
-                "age": "Character's Age",
-                "facial_features": "Description of Character's facial features",
-                "body_type": "Description of Character's body type",
-                "hair_style": "Description of Character's hair style",
-                "accessories": "Description of Character's accessories"
-            }},
-            ...
-        ]
+        {{
+            "characters": [
+                {{
+                    "name": "Character Name",
+                    "ethnicity": "Character's Ethnicity",
+                    "gender": "Character's Gender",
+                    "age": "Character's Age",
+                    "facial_features": "Description of Character's facial features",
+                    "body_type": "Description of Character's body type",
+                    "hair_style": "Description of Character's hair style",
+                    "accessories": "Description of Character's accessories"
+                }},
+                ...
+            ]
+        }}
 
         Guidelines:
         - Include the character's name as it appears in the story.
@@ -217,7 +397,7 @@ def generate_characters(client, story: str) -> List[Dict[str, str]]:
         - Focus on permanent or long-term features, not on changeable expressions or temporary states.
         - Do not include any descriptions of clothing or attire.
 
-        Please provide only the JSON array, without any additional text.
+        Please provide only the JSON object, without any additional text.
         """
 
     messages = [
@@ -232,35 +412,30 @@ def generate_characters(client, story: str) -> List[Dict[str, str]]:
                 6. Translating character personalities into comprehensive physical attributes
                 7. Accurately estimating and describing characters' attributes based on story context
                 8. Avoiding any mention of clothing or attire in character descriptions"""
-        }, 
+        },
         {"role": "user", "content": prompt},
     ]
 
-    response = call_openai_api(client, messages)
-    if not response:
+    parsed = call_json_api(client, messages, CHARACTER_SCHEMA, "characters")
+    if parsed is None:
         print("API returned empty response")
-    
-    try:
-        return json.loads(response)
-    except json.JSONDecodeError:
-        # if the direct parsing fails, try to extract the JSON array part
-        array_match = re.search(r'\[.*\]', response, re.DOTALL)
-        if array_match:
-            try:
-                return json.loads(array_match.group())
-            except json.JSONDecodeError:
-                print("Failed to parse the response as a JSON array.")
-                return []
-        else:
-            print("No JSON array found in the response.")
-            return []
+        return []
+
+    characters = parsed.get("characters")
+    if isinstance(characters, list):
+        return characters
+
+    # Tolerate a bare array response.
+    if isinstance(parsed, list):
+        return parsed
+    return []
 
 
 def generate_storyboard(client, title: str, story: str, story_type: str, character_names: List[str] = None) -> Dict[str, Any]:
     config = load_config()
     max_scenes = config['storyboard']['max_scenes']
     timestamp = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-    
+
     # define type-specific guidelines
     type_guidelines = {
         "general": "Focus on visually representing key moments and significant changes in the story.",
@@ -268,7 +443,7 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         "fun facts": "Focus on visually representing the information, statistics, or concepts mentioned in the fun fact.",
         "life pro tips": "Focus on visually representing the implementation of the tip, its benefits, and potential scenarios where it can be applied.",
     }
-    
+
     # define type-specific opening scene instructions
     opening_scene_instructions = {
         "general": "A vivid description (60-70 words) that sets up an engaging question related to the overall theme of the story.",
@@ -276,7 +451,7 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         "fun facts": "A vivid description (60-70 words) that sets up an engaging question related to the fun fact.",
         "life pro tips": "A vivid description (60-70 words) that sets up a common problem or situation related to the life pro tip.",
     }
-    
+
     # define type-specific additional guidelines
     additional_guidelines = {
         "general": """
@@ -297,7 +472,7 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         - Include scenes that show both the process of implementing the tip and its positive outcomes.
         """,
     }
-    
+
     prompt = f"""Based on the following {story_type}, create a detailed storyboard with up to {max_scenes} scenes.
 
         Title: {title}
@@ -311,7 +486,7 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         Then, for each subsequent scene, provide the following details:
         1. Scene Number
         2. Description: A vivid description (60-70 words) focusing on key visual elements. {type_guidelines.get(story_type, type_guidelines["general"])}
-        3. Subtitles: Use EXACT quotes from the original text. 
+        3. Subtitles: Use EXACT quotes from the original text.
         4. Transition: Specify the type of transition to the current scene.
 
         Guidelines:
@@ -322,8 +497,8 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         - EVERY SCENE MUST HAVE NON-EMPTY SUBTITLES. If you run out of story text, do not create additional scenes.
         - Ensure that the scenes flow logically and capture the essence of the {story_type}.
         - The total number of scenes should not exceed {max_scenes}.
-        - When using a character's name in possessive form (e.g., "Character's") in the description, 
-          surround it with double curly braces {{{{ }}}} if it's not referring to the character's appearance. 
+        - When using a character's name in possessive form (e.g., "Character's") in the description,
+          surround it with double curly braces {{{{ }}}} if it's not referring to the character's appearance.
           For example: "{{{{Giovanni's}}}} workshop" or "The mysterious figure stood at the entrance of {{{{Giovanni's}}}} laboratory."
         {additional_guidelines.get(story_type, "")}
 
@@ -343,23 +518,21 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
 
         Output the result as a JSON object with the following structure:
         {{
-            "project_info": {{
-                "title": "{title}",
-                "user": "AI Generated",
-                "timestamp": "{timestamp}"
-            }},
             "storyboards": [
                 {{
-                    "scene_number": "Scene Number",
+                    "scene_number": 1,
                     "description": "Scene Description",
                     "subtitles": "Subtitles or Dialogue",
-                    "image": null,
-                    "audio": null,
-                    "transition_type": "Transition Type"
+                    "transition_type": "zoom-in"
                 }},
                 ...
             ]
         }}
+
+        Field rules:
+        - scene_number must be a whole number (1, 2, 3, ...), never text.
+        - transition_type must be exactly "zoom-in" or "zoom-out".
+        - description and subtitles must be plain strings.
 
         Here's the story:
 
@@ -378,32 +551,33 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
                 7. Balancing informative content with visually interesting and engaging scenes
                 8. Maintaining logical consistency between scenes while providing a variety of visual representations
 
-                Your storyboards effectively bridge the gap between various types of content and visual representation, 
-                paying close attention to both the overall flow of information and specific details that enhance 
+                Your storyboards effectively bridge the gap between various types of content and visual representation,
+                paying close attention to both the overall flow of information and specific details that enhance
                 the communication of the content.'''
         },
         {"role": "user", "content": prompt},
     ]
 
-    response = call_openai_api(client, messages)
-    if not response:
+    parsed = call_json_api(client, messages, STORYBOARD_SCHEMA, "storyboard")
+    if parsed is None:
         print("API returned empty response")
         return create_empty_storyboard(title)
-    
-    json_match = re.search(r'\{.*\}', response, re.DOTALL)
-    if json_match:
-        json_str = json_match.group()
-        try:
-            storyboard_data = json.loads(json_str)
-            return storyboard_data
-        except json.JSONDecodeError as e:
-            print(f"JSON Decode Error: {e}")
-            logging.error(f"Failed to parse JSON: {json_str}")
-            return create_empty_storyboard(title)
-    else:
-        print("No JSON object found in the response")
-        logging.error(f"Full response: {response}")
+
+    storyboards = parsed.get("storyboards")
+    if not isinstance(storyboards, list):
+        print("No storyboards found in the response")
         return create_empty_storyboard(title)
+
+    result = {
+        "project_info": {
+            "title": title,
+            "user": "AI Generated",
+            "timestamp": timestamp,
+        },
+        "storyboards": storyboards,
+    }
+    return result
+
 
 def generate_general_storyboard(client, title: str, story: str, character_names: List[str]) -> Dict[str, Any]:
     return generate_storyboard(client, title, story, "general", character_names)

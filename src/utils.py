@@ -1,10 +1,21 @@
-import os
+﻿import os
 import re
 import json
+import sys
+import time
 from datetime import datetime
-import datetime
-from typing import List, Dict
+import datetime as dt_module
+from typing import List, Dict, Any, Optional
 from PIL import Image
+
+# Windows consoles default to cp1252, which cannot encode the unicode that
+# models like to emit. Switching to UTF-8 keeps prints from crashing.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 STORY_TYPES = [
@@ -35,6 +46,32 @@ STORY_TYPE_HASHTAGS = {
     "Love": "#love",
 }
 
+# In-memory overrides applied on top of config.json (used by CLI flags).
+_CONFIG_OVERRIDES: Dict[str, Any] = {}
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge `override` into a copy of `base` without mutating either."""
+    merged = dict(base)
+    for key, value in (override or {}).items():
+        current = merged.get(key)
+        if isinstance(value, dict) and isinstance(current, dict):
+            merged[key] = _deep_merge(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def set_config_overrides(overrides: Optional[Dict[str, Any]]) -> None:
+    """Set (or clear) runtime overrides that are merged over config.json."""
+    global _CONFIG_OVERRIDES
+    _CONFIG_OVERRIDES = overrides or {}
+
+
+def get_config_overrides() -> Dict[str, Any]:
+    return dict(_CONFIG_OVERRIDES)
+
+
 def create_resource_dir(script_dir, story_type, title):
     # Remove leading and trailing quotation marks and spaces
     clean_title = title.strip().strip('"')
@@ -42,6 +79,9 @@ def create_resource_dir(script_dir, story_type, title):
     # Remove special characters and replace spaces with underscores
     clean_title = re.sub(r'[^\w\s-]', '', clean_title)
     clean_title = re.sub(r'[-\s]+', '_', clean_title)
+
+    # Keep the folder name within the limits of every file system
+    clean_title = clean_title.strip('_')[:100]
 
     # Create data directory if it doesn't exist
     data_dir = os.path.join(os.path.dirname(script_dir), "data")
@@ -57,23 +97,121 @@ def create_resource_dir(script_dir, story_type, title):
 
     return story_dir
 
-def call_openai_api(client, messages, max_retries=3):
+
+def _extract_message_content(message) -> Optional[str]:
+    """Read the assistant text, falling back to reasoning content.
+
+    Reasoning models (gpt-oss) can return the answer on `reasoning` instead of
+    `content`, and some providers return nothing on `content` at all.
+    """
+    content = getattr(message, "content", None)
+    if content:
+        return content
+    for attr in ("reasoning", "reasoning_content"):
+        value = getattr(message, attr, None)
+        if value:
+            return value
+    return None
+
+
+def _parse_retry_delay_from_message(message: str) -> Optional[float]:
+    """Pull a wait time out of a provider error message.
+
+    Groq reports quota resets as "Please try again in 3m26.064s".
+    """
+    if not message:
+        return None
+    match = re.search(
+        r"try again in\s+(?:(\d+)h)?\s*(?:(\d+)m)?\s*([\d.]+)s", message, re.IGNORECASE
+    )
+    if not match:
+        return None
+    hours = float(match.group(1) or 0)
+    minutes = float(match.group(2) or 0)
+    seconds = float(match.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _retry_delay(error, attempt: int) -> float:
+    """Backoff delay for a failed API call, honouring `retry-after` headers."""
+    delay = min(2 ** attempt, 60)
+    response = getattr(error, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", None) or {}
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after:
+            try:
+                delay = max(delay, float(retry_after))
+            except (TypeError, ValueError):
+                pass
+    message_delay = _parse_retry_delay_from_message(str(error))
+    if message_delay:
+        delay = max(delay, message_delay)
+    return min(delay, 180)
+
+
+def call_openai_api(client, messages, max_retries=3, response_format=None, reasoning_effort=None):
+    """Call the configured chat model with retries and provider-aware options.
+
+    `response_format` is passed straight through, so OpenAI-compatible providers
+    that support JSON Object / JSON Schema mode can be used. When a model is
+    rate limited the next configured fallback model is tried, which matters on
+    free tiers where each model has its own daily budget.
+    """
     config = load_config()
-    # Add a system message requesting JSON output
-    for attempt in range(max_retries):
-        try:
-            response = client.chat.completions.create(
-                model=config['openai']['model'],
-                temperature=config['openai']['temperature'],
-                messages=messages
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            if attempt < max_retries - 1:
-                print(f"Retrying... (Attempt {attempt + 2} of {max_retries})")
-            else:
-                print("Max retries reached. Unable to get a valid response.")
+    provider = config.get("providers", {}).get("llm", "openai")
+
+    if provider == "groq":
+        candidates = [config["groq"]["model"]] + list(
+            config["groq"].get("model_fallbacks", [])
+        )
+        # gpt-oss on Groq pins temperature at 1.0; sending another value errors.
+        request = {"messages": messages}
+    else:
+        candidates = [config["openai"]["model"]]
+        request = {
+            "temperature": config["openai"]["temperature"],
+            "messages": messages,
+        }
+
+    if response_format is not None:
+        request["response_format"] = response_format
+
+    for model in candidates:
+        request["model"] = model
+        if provider == "groq" and model.startswith("openai/gpt-oss"):
+            # Reasoning output can leak into the answer and break JSON, so it
+            # is kept short.
+            effort = reasoning_effort or config["groq"].get("reasoning_effort")
+            if effort:
+                request["extra_body"] = {"reasoning_effort": effort}
+        for attempt in range(max_retries):
+            try:
+                response = client.chat.completions.create(**request)
+                content = _extract_message_content(response.choices[0].message)
+                if content:
+                    return content
+                print("The model returned an empty response.")
+                break
+            except Exception as e:
+                print(f"An error occurred: {e}")
+                if attempt < max_retries - 1:
+                    delay = _retry_delay(e, attempt)
+                    if delay > 150:
+                        print(
+                            f"{model} needs {delay / 60:.1f} minutes before it can "
+                            "be used again."
+                        )
+                        break
+                    print(
+                        f"Retrying in {delay:.0f}s... "
+                        f"(Attempt {attempt + 2} of {max_retries})"
+                    )
+                    time.sleep(delay)
+                else:
+                    print("Max retries reached. Unable to get a valid response.")
+        if len(candidates) > 1:
+            print(f"Trying the next model instead of {model}...")
     return None
 
 
@@ -120,7 +258,7 @@ def pick_image_style():
 
 def convert_to_timestamped_subtitles(chinese_storyboard_project: Dict, scene_duration: int = 10) -> List[Dict]:
     timestamped_subtitles = []
-    current_time = datetime.timedelta()
+    current_time = dt_module.timedelta()
 
     for scene in chinese_storyboard_project['storyboards']:
         subtitles = scene['subtitles'].split('\n')
@@ -128,7 +266,7 @@ def convert_to_timestamped_subtitles(chinese_storyboard_project: Dict, scene_dur
 
         for subtitle in subtitles:
             start_time = current_time
-            end_time = current_time + datetime.timedelta(seconds=time_per_subtitle)
+            end_time = current_time + dt_module.timedelta(seconds=time_per_subtitle)
 
             timestamped_subtitles.append({
                 'start_time': start_time.total_seconds(),
@@ -141,7 +279,7 @@ def convert_to_timestamped_subtitles(chinese_storyboard_project: Dict, scene_dur
     return timestamped_subtitles
 
 def format_timedelta(seconds: float) -> str:
-    td = datetime.timedelta(seconds=seconds)
+    td = dt_module.timedelta(seconds=seconds)
     hours, remainder = divmod(td.seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     milliseconds = td.microseconds // 1000
@@ -157,24 +295,68 @@ def save_timestamped_subtitles(timestamped_subtitles: List[Dict], output_file: s
 def load_config(config_file='config.json'):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(os.path.dirname(script_dir), config_file)
-    with open(config_path, 'r') as f:
-        return json.load(f)
+    with open(config_path, 'r', encoding="utf-8") as f:
+        config = json.load(f)
+    if _CONFIG_OVERRIDES:
+        config = _deep_merge(config, _CONFIG_OVERRIDES)
+    return config
 
 def create_blank_image(filename, width=720, height=1280):
     blank_image = Image.new('RGB', (width, height), color='black')
     blank_image.save(filename)
     print(f"Created blank image: {filename}")
 
+
+def normalize_image_file(filename, width=720, height=1280):
+    """Center-crop and resize an image to the exact clip size.
+
+    Every scene image has to end up with identical dimensions, otherwise
+    moviepy's `concatenate_videoclips` refuses to join them. Providers also
+    return JPEG under a .png filename, so re-encoding here keeps the file
+    honest.
+    """
+    try:
+        with Image.open(filename) as img:
+            img = img.convert("RGB")
+            src_w, src_h = img.size
+            if src_w == 0 or src_h == 0:
+                return False
+
+            target_ratio = width / height
+            src_ratio = src_w / src_h
+
+            if src_ratio > target_ratio:
+                # Too wide: crop the sides.
+                crop_w = int(round(src_h * target_ratio))
+                left = max(0, (src_w - crop_w) // 2)
+                img = img.crop((left, 0, left + crop_w, src_h))
+            elif src_ratio < target_ratio:
+                # Too tall: crop top and bottom.
+                crop_h = int(round(src_w / target_ratio))
+                top = max(0, (src_h - crop_h) // 2)
+                img = img.crop((0, top, src_w, top + crop_h))
+
+            img = img.resize((width, height), Image.LANCZOS)
+            img.save(filename, "PNG")
+        return True
+    except Exception as e:
+        print(f"Failed to normalize image {filename}: {e}")
+        return False
+
+
+def get_voice_list(tts_provider: Optional[str] = None) -> List[str]:
+    """Voice personas for the active TTS provider."""
+    config = load_config()
+    if tts_provider is None:
+        tts_provider = config.get("providers", {}).get("tts", "openai")
+    provider_config = config.get(tts_provider, {})
+    voices = provider_config.get("tts_voices")
+    if not voices:
+        voices = config.get("openai", {}).get("tts_voices", [])
+    return list(voices)
+
 def pick_voice_name():
-    # alloy, echo, fable, onyx, nova, and shimmer
-    voices = [
-        "alloy",
-        "echo",
-        "fable",
-        "onyx",
-        "nova",
-        "shimmer"
-    ]
+    voices = get_voice_list()
     print("Choose a voice:")
     for i, voice in enumerate(voices, 1):
         print(f"{i}. {voice}")

@@ -61,20 +61,34 @@ Faceless Video Generator is a comprehensive multimedia content creation tool tha
 4. Configure environment variables:
    Create a `.env` file in the project root directory with the following content:
 
-   ```plaintext
-   # Required: OpenAI API configuration for story generation
-   OPENAI_BASE_URL=your_openai_base_url
-   OPENAI_API_KEY=your_openai_api_key
-   
-   # Required: Replicate API token for default image generation
-   REPLICATE_API_TOKEN=your_replicate_api_token
-   
-   # Optional: FAL API key if you want to use FAL for image generation
-   # To use FAL, you'll need to modify src/main.py
-   FAL_KEY=your_fal_api_key
-   ```
+    ```plaintext
+    # Groq: LLM, speech to text, and (after accepting the model terms) TTS
+    GROQ_API_KEY=your_groq_api_key
 
-   Note: The system uses Replicate for image generation by default. If you prefer to use FAL's image generation service, you can modify `src/main.py` accordingly.
+    # Gemini: free tier text to speech. Image generation needs billing.
+    GEMINI_API_KEY=your_gemini_api_key
+
+    # Optional: image generation fallbacks
+    REPLICATE_API_TOKEN=your_replicate_api_token
+    FAL_KEY=your_fal_api_key
+
+    # Optional: the original OpenAI setup still works
+    OPENAI_API_KEY=your_openai_api_key
+    OPENAI_BASE_URL=your_openai_base_url
+    ```
+
+    Note: the system uses Replicate for image generation by default. If you prefer to use FAL's image generation service, you can modify `src/main.py` accordingly.
+
+### Free tier limits to be aware of
+
+| Service | Free tier |
+| --- | --- |
+| Groq | 200k tokens per day per model, 1k requests per day. Each model has its own budget, and the configured `model_fallbacks` are used when one is exhausted. |
+| Groq TTS | The Orpheus models need the terms accepted once in the console before they can be called. |
+| Gemini TTS | 10 requests per day **per model**. Longer videos rotate through `tts_models`. |
+| Gemini images | **0 requests.** Image generation requires billing. |
+| Felo | The free plan does not admit generation calls; the account balance has to be topped up. |
+| Local (SD-Turbo) | Unlimited, offline, no key. Slow on a CPU. |
 
 ## Usage
 
@@ -101,13 +115,33 @@ Faceless Video Generator is a comprehensive multimedia content creation tool tha
 
 The script will automatically generate the story, images, and video.
 
+### Command line options
+
+```bash
+python src/main.py --scenes 3            # override the number of scenes
+python src/main.py --no-images           # skip image generation (blank placeholder frames)
+python src/main.py --image-provider replicate,fal   # override the image provider chain
+python src/main.py --llm-model openai/gpt-oss-120b   # override the chat model
+python src/main.py --story-type Mystery --image-style cinematic --voice Kore  # skip the prompts
+```
+
+### Checking the providers
+
+```bash
+python src/test.py --smoke              # LLM, TTS and speech to text
+python src/test.py --smoke --with-image # also generate one image
+```
+
 ## Project Structure
 
 - `src/main.py`: Main script controlling the overall workflow.
+- `src/providers.py`: Provider clients, speech chunking, audio merging, transcription and the image provider chain.
+- `src/local_image.py`: Local SD-Turbo image generation (no API key required).
+- `src/pil_text.py`: Pillow based caption rendering (shortcap's own renderer needs ImageMagick).
 - `src/story_generator.py`: Functions for generating stories, translations, and storyboards.
 - `src/image_generator.py`: Functions for generating images.
-- `src/video_creator.py`: Functions for creating videos.
-- `src/audio_generator.py`: Functions for generating audio using OpenAI TTS.
+- `src/video_creator.py`: Functions for creating videos and burning in captions.
+- `src/audio_generator.py`: Functions for generating audio using the configured TTS provider.
 - `src/utils.py`: Utility functions for various tasks.
 - `src/transitions.py`: Video transition effects.
 - `src/parse_json.py`: JSON parsing utilities.
@@ -116,6 +150,49 @@ The script will automatically generate the story, images, and video.
 ## Configuration
 
 The `config.json` file contains various settings for the project, including:
+
+### Provider Selection
+
+Every outbound call goes through a provider, and the `providers` block decides which service handles each step:
+
+```json
+"providers": {
+  "llm": "groq",
+  "tts": "gemini",
+  "stt": "groq",
+  "image": ["gemini", "replicate", "fal"]
+}
+```
+
+| Provider | Used for | Notes |
+| --- | --- | --- |
+| `groq` | LLM, TTS, speech to text | OpenAI compatible. `openai/gpt-oss-*` supports strict JSON schema output. |
+| `gemini` | TTS, image generation | TTS is free tier; **image generation is not** (the free tier allows 0 image requests). |
+| `local` | image generation | Runs SD-Turbo on the CPU through diffusers. No API key, no credits, no network. |
+| `openai` | LLM, TTS, speech to text | The original provider, kept as a fallback. |
+| `replicate` / `fal` | image generation | Only used through the `image` chain. |
+
+The `image` setting accepts a single provider or an ordered list. Each provider is tried in turn, so a blocked free tier does not break a run.
+
+### Local image generation
+
+The `local` provider generates images on this machine with [SD-Turbo](https://huggingface.co/stabilityai/sd-turbo), a distilled Stable Diffusion model that produces good images in a single step. It needs no API key and no credits, which makes it the provider that always works.
+
+```bash
+pip install diffusers==0.31.0 transformers==4.46.3 accelerate==0.34.2 safetensors==0.8.0 hf_transfer==0.1.9
+```
+
+The weights (~2.4 GB) are downloaded into `models/sd-turbo` on first use and then reused. The `local` block in `config.json` controls the model, the number of steps, the output size and the thread count:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `model` | `stabilityai/sd-turbo` | Any diffusers text to image model works. |
+| `local_dir` | `models/sd-turbo` | Where the weights live. |
+| `variant` | `fp16` | Half the download size, loaded as float32 on the CPU. |
+| `steps` | `1` | SD-Turbo is distilled for single step generation. More steps means a slower render. |
+| `width` / `height` | `576` / `1024` | 9:16. The frames are resized to 720x1280 afterwards. |
+
+Expect roughly **2.5 minutes per image on a 4 core laptop CPU**, so a 14 scene video needs about 40 minutes of rendering. A GPU cuts that down to seconds.
 
 ### Story Generation Settings
 - `char_limit_min`: Minimum character count for generated stories (700)
@@ -127,6 +204,17 @@ The `config.json` file contains various settings for the project, including:
 ### OpenAI Settings
 - `model`: The GPT model to use for story generation ("gpt-4")
 - `temperature`: Creativity level for story generation (0.9, higher means more creative)
+
+### Groq Settings
+- `model`: Default chat model, with `model_fallbacks` used when a model is rate limited
+- `reasoning_effort`: `"low"` keeps the reasoning models from leaking markup into the JSON output
+- `tts_model`, `tts_voices`, `tts_max_chars`: Orpheus speech settings (200 character input limit, wav output only)
+- `whisper_model`: Model used for the caption transcript
+
+### Gemini Settings
+- `models`: Image models to try, in order
+- `tts_models`: Speech models to try, in order. The free tier allows **10 requests per day per model**, so a longer video rotates through them.
+- `tts_voices`: Prebuilt voice names
 
 ### Image Generation Settings
 The project supports two image generation APIs:

@@ -1,4 +1,101 @@
 {
+  "providers": {
+    "llm": "groq",
+    "tts": "gemini",
+    "stt": "groq",
+    "image": ["gemini", "local", "replicate", "fal"]
+  },
+  "local": {
+    "model": "stabilityai/sd-turbo",
+    "local_dir": "models/sd-turbo",
+    "variant": "fp16",
+    "steps": 1,
+    "guidance_scale": 0.0,
+    "width": 576,
+    "height": 1024,
+    "threads": 4
+  },
+  "groq": {
+    "base_url": "https://api.groq.com/openai/v1",
+    "model": "openai/gpt-oss-20b",
+    "model_fallbacks": [
+      "openai/gpt-oss-120b",
+      "qwen/qwen3.8-27b"
+    ],
+    "reasoning_effort": "low",
+    "tts_model": "canopylabs/orpheus-v1-english",
+    "tts_voices": [
+      "autumn",
+      "diana",
+      "hannah",
+      "austin",
+      "daniel",
+      "troy"
+    ],
+    "tts_max_chars": 200,
+    "tts_format": "wav",
+    "whisper_model": "whisper-large-v3-turbo"
+  },
+  "gemini": {
+    "base_url": "https://generativelanguage.googleapis.com",
+    "api_versions": ["v1beta", "v1"],
+    "models": [
+      "gemini-nano-banana-2.1",
+      "gemini-3.1-flash-lite-image",
+      "gemini-3.1-flash-image",
+      "gemini-2.5-flash-image"
+    ],
+    "aspect_ratio": "9:16",
+    "image_size": "1K",
+    "max_retries": 3,
+    "tts_model": "gemini-3.8-flash-tts",
+    "tts_models": [
+      "gemini-3.1-flash-tts-preview",
+      "gemini-2.5-flash-preview-tts",
+      "gemini-3.8-flash-tts",
+      "gemini-3.8-flash-lite-tts"
+    ],
+    "tts_voices": [
+      "Kore",
+      "Puck",
+      "Charon",
+      "Callirrhoe",
+      "Zephyr",
+      "Aoede",
+      "Leda",
+      "Orus",
+      "Fenrir",
+      "Enceladus",
+      "Iapetus",
+      "Umbriel",
+      "Algenib",
+      "Despina",
+      "Erinome",
+      "Algieba",
+      "Rasalgethi",
+      "Laomedeia",
+      "Achernar",
+      "Alnilam",
+      "Schedar",
+      "Gacrux",
+      "Pulcherrima",
+      "Achird",
+      "Zubenelgenubi",
+      "Vindemiatrix",
+      "Sadachbia",
+      "Sadaltager",
+      "Sulafat"
+    ],
+    "tts_format": "wav",
+    "tts_min_interval": 3.0
+  },
+  "felo": {
+    "base_url": "https://openapi.felo.ai/api/v1",
+    "model": "auto",
+    "aspect_ratio": "9:16",
+    "size": "720x1280",
+    "max_retries": 3
+  },
   "story_generation": {
     "char_limit_min": 600,
     "char_limit_max": 700
@@ -8,7 +105,18 @@
   },
   "openai": {
     "model": "gpt-4o",
-    "temperature": 0.9
+    "temperature": 0.9,
+    "tts_model": "tts-1",
+    "tts_voices": [
+      "alloy",
+      "echo",
+      "fable",
+      "onyx",
+      "nova",
+      "shimmer"
+    ],
+    "tts_format": "mp3",
+    "whisper_model": "whisper-1"
   },
   "replicate_flux_api": {
     "model": "black-forest-labs/flux-schnell",
@@ -28,5 +136,10 @@
   },
   "tts": {
     "speech_rate": 1.1
+  },
+  "video": {
+    "width": 720,
+    "height": 1280,
+    "fps": 24
   }
 }
