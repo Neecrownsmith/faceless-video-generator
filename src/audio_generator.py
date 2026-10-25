@@ -242,20 +242,19 @@ if __name__ == "__main__":
     from providers import _build_client, get_audio_extension
 
     sentence = (
-        "I was very scared of Carlos especially after he had just taken out "
-        "Adolpho and Roberto. He walked close to me and to be honest, I, at "
-        "that moment, thought I was living my last moments on earth. But he "
-        "surprised me by smiling. He put a friendly hand on my shoulder and "
-        "spoke. “What did you say was your name, friend?” He asked. “Ryan, "
-        "Sir.” I replied. I was shivering in spite of the fact that he had "
-        "called me ‘friend’."
+        """
+“Victor threatened to destroy your business and expose innocent people if I returned. When I saw people watching you outside that shopping complex, I pretended not to know you because I was afraid they would discover you had found me.”
+Amara's eyes filled with tears.
+“You should have trusted me enough to let me help you, Mummy.”
+Grace lowered her head.
+"""
     )
 
     voices = {
-        "groq": "autumn",
+        # "groq": "autumn",
         "pollinations": "en-US-Olivia",
-        "edge": "en-US-AriaNeural",
-        "gemini": "Kore",
+        # "edge": "en-US-AriaNeural",
+        # "gemini": "Kore",
     }
     config = load_config()
     models = {

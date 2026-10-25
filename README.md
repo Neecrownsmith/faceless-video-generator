@@ -28,7 +28,7 @@ Faceless Video Generator is a comprehensive multimedia content creation tool tha
 - **Video Production**: Combine generated images and subtitles into a video with selectable voice options.
 - **Multiple Story Types**: Support for various story types, each with tailored generation processes.
 - **Character Generation**: For applicable story types, the system generates detailed character descriptions.
-- **Customizable Image Styles**: Users can choose from different image styles like photorealistic, cinematic, anime, comic-book, and pixar-art.
+- **Customizable Look Presets**: Five named styles (`storyboard`, `noir`, `flat`, `chibi`, `doodle`) that set the image prompt, the palette grade, the camera move and the caption treatment. Older names like `cinematic` still work.
 - **Voice Selection**: Multiple voice options for audio generation.
 
 ## Installation
@@ -102,34 +102,61 @@ Faceless Video Generator is a comprehensive multimedia content creation tool tha
    source venv/bin/activate
    ```
 
-2. Run the main script:
+2. Run the main script via CLI:
 
    ```bash
+   # Default run (YouTube preset, Mystery, storyboard style)
    python src/main.py
+
+   # Custom topic and style for vertical video (Shorts/TikTok)
+   python src/main.py --preset shorts --story-type "Scary" --style noir --scenes 14
+
+   # Interactive wizard
+   python src/main.py --interactive
+
+   # Audio-only dry run (skip image generation)
+   python src/main.py --no-images
+
+   # With custom background music
+   python src/main.py --bgm "path/to/music.mp3"
    ```
 
-3. Follow the prompts to:
-   - Select a story type
-   - Choose an image style
-   - Pick a voice for audio generation
+   CLI Options:
+   - `--preset`: `youtube` (1280x720) or `shorts` (720x1280)
+   - `--story-type`, `-t`: Story genre (e.g. `Mystery`, `Scary`, `Bedtime`, `Philosophy`, `Fun Facts`)
+   - `--style`, `-s`: Visual style (`storyboard`, `noir`, `flat`, `chibi`, `doodle`, etc.)
+   - `--scenes`, `-n`: Max scenes to generate (overrides preset default)
+   - `--voice`, `-v`: Override TTS voice persona
+   - `--no-images`: Dry run without generating images
+   - `--bgm`: Path to background audio/music
+   - `--interactive`, `-i`: Interactively pick story type, style, and voice from terminal prompts
 
-The script will automatically generate the story, images, and video.
+### Look presets
 
-### Command line options
+`src/main.py` picks one of five looks from `config.json` → `styles.profiles`.
+A preset sets the prompt suffix, the palette post-process, the camera move and
+the caption treatment:
 
-```bash
-python src/main.py --scenes 3            # override the number of scenes
-python src/main.py --no-images           # skip image generation (blank placeholder frames)
-python src/main.py --image-provider replicate,fal   # override the image provider chain
-python src/main.py --llm-model openai/gpt-oss-120b   # override the chat model
-python src/main.py --story-type Mystery --image-style cinematic --voice Kore  # skip the prompts
-```
+| style | look | camera | captions |
+| --- | --- | --- | --- |
+| `afro-cartoon` | 2D modern animation skit (clean cel shading, warm sunlight, viral comedy style) | pan / zoom / pop | word captions |
+| `stickman` | minimalist clean line art stickman with oval bean body | pop / bob | word captions |
+| `storybook` | children's book cartoon illustration, painterly colors | bob / zoom | word captions |
+| `storyboard` | flat cartoon, thick outlines, pastel fills | pop / pan | speech bubbles |
+| `noir` | sepia ink, spot blacks, hatching | pan / zoom | word captions |
+| `flat` | bright vector, no outlines | zoom / pan | word captions |
+| `chibi` | big head sticker art, soft shading | bob / pop | word captions |
+| `doodle` | thin black line art on white | wipe / pop | word captions |
+
+The palette pass in `src/styles.py` re-grades every frame after generation, so
+24 separate images still read as one video. Unknown names such as `cinematic`
+keep working: the name is passed to the image model as the style.
 
 ### Checking the providers
 
 ```bash
-python src/test.py --smoke              # LLM, TTS and speech to text
-python src/test.py --smoke --with-image # also generate one image
+python src/test.py              # LLM, TTS and speech to text
+python src/test.py              # set with_image=True in the block to add one image
 ```
 
 ## Project Structure

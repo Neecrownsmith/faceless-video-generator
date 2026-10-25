@@ -17,18 +17,24 @@ load_dotenv(os.path.join(REPO_DIR, ".env"))
 os.environ.setdefault("OPENAI_API_KEY", "not-used")
 os.environ.setdefault("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
 
+from typing import Optional
+
 from moviepy.editor import (  # noqa: E402
     ImageClip,
     TextClip,
     CompositeVideoClip,
     concatenate_videoclips,
-    AudioFileClip
+    AudioFileClip,
+    CompositeAudioClip,
+    afx,
 )
 from audio_generator import generate_audio  # noqa: E402
-from transitions import zoom  # noqa: E402
+from transitions import bob, pan, pop, wipe, zoom  # noqa: E402
 import shortcap  # noqa: E402
+from bubbles import bubble_clips  # noqa: E402
 from providers import ensure_ffmpeg_on_path, ffmpeg_exe, transcribe_video  # noqa: E402
-from utils import get_caption_config, get_video_config  # noqa: E402
+from styles import captions_for, motion_for  # noqa: E402
+from utils import get_caption_config, get_video_config, load_config  # noqa: E402
 
 
 def _patch_shortcap() -> None:
@@ -115,6 +121,23 @@ def _caption_options():
     }
 
 
+def _apply_motion(clip, motion):
+    """Turn a motion name from the style profile into a moviepy effect."""
+    if motion == 'zoom-in':
+        return zoom(clip)
+    if motion == 'zoom-out':
+        return zoom(clip, mode='out')
+    if motion == 'pop':
+        return pop(clip)
+    if motion == 'bob':
+        return bob(clip)
+    if motion == 'wipe':
+        return wipe(clip)
+    if motion and motion.startswith('pan-'):
+        return pan(clip, direction=motion.split('-', 1)[1])
+    return clip
+
+
 def add_subtitles(output_file, output_file_subtitle):
     """Burn word level captions into the video.
 
@@ -153,22 +176,60 @@ def add_subtitles(output_file, output_file_subtitle):
         shutil.copyfile(output_file, output_file_subtitle)
 
 
+def _load_bgm_clip(duration: float, bgm_path: Optional[str] = None):
+    """Load, loop and scale volume for background music if configured."""
+    config = load_config()
+    bgm_cfg = config.get("bgm", {})
+
+    track_path = bgm_path or bgm_cfg.get("track")
+    if not track_path and bgm_cfg.get("enabled"):
+        candidates = [
+            os.path.join(REPO_DIR, "assets", "bgm.mp3"),
+            os.path.join(REPO_DIR, "assets", "bgm.wav"),
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                track_path = candidate
+                break
+
+    if not track_path or not os.path.exists(track_path):
+        return None
+
+    try:
+        volume = float(bgm_cfg.get("volume", 0.15))
+        bgm = AudioFileClip(track_path)
+        if bgm.duration < duration:
+            bgm = afx.audio_loop(bgm, duration=duration)
+        else:
+            bgm = bgm.subclip(0, duration)
+        return bgm.volumex(volume)
+    except Exception as e:
+        print(f"Could not load background music ({track_path}): {e}")
+        return None
+
+
 def create_video(client, storyboard_project, output_file, audio_dir, voice_name,
-                 timeline=None, narration_track=None, subtitles=True):
+                 timeline=None, narration_track=None, subtitles=True, style=None,
+                 bgm_file: Optional[str] = None):
     """Assemble the video.
 
     When a timeline and a narration track are supplied the images are timed
     against the real audio, which decouples how many pictures the video has
     from how the narration was chunked. Without them the original behaviour -
     one scene, one request, one clip - is used.
+
+    `style` selects the camera move and the caption treatment from the look
+    presets, so `storyboard` panels pop in and get speech bubbles while `noir`
+    drifts across the frame under word captions.
     """
     if timeline and narration_track:
         _create_video_from_timeline(
-            storyboard_project, output_file, timeline, narration_track, subtitles
+            storyboard_project, output_file, timeline, narration_track, subtitles, style, bgm_file
         )
         return
 
     clips = []
+    audio_clips = []
     for scene in storyboard_project['storyboards']:
         # Generate audio for the subtitle
         audio_file = scene['audio']
@@ -187,6 +248,7 @@ def create_video(client, storyboard_project, output_file, audio_dir, voice_name,
 
         # Create audio clip
         audio_clip = AudioFileClip(audio_file)
+        audio_clips.append(audio_clip)
 
         # Create image clip with duration matching the audio
         image_clip = ImageClip(image_file).set_duration(audio_clip.duration)
@@ -197,30 +259,49 @@ def create_video(client, storyboard_project, output_file, audio_dir, voice_name,
         # Apply transition effect
         transition_type = scene['transition_type']
 
-        if transition_type == 'zoom-in':
-            clips.append(zoom(video_clip))
-        elif transition_type == 'zoom-out':
-            clips.append(zoom(video_clip, mode='out'))
-        else:
-            clips.append(video_clip)
+        if style:
+            transition_type = motion_for(style, len(clips))
+        clips.append(_apply_motion(video_clip, transition_type))
 
     if not clips:
         raise RuntimeError("No clips were produced; cannot create the video.")
 
     final_clip = concatenate_videoclips(clips)
-    final_clip.write_videofile(output_file, fps=get_video_config()["fps"])
+    try:
+        final_clip.write_videofile(output_file, fps=get_video_config()["fps"])
+    finally:
+        try:
+            final_clip.close()
+        except Exception:
+            pass
+        for c in clips:
+            try:
+                c.close()
+            except Exception:
+                pass
+        for ac in audio_clips:
+            try:
+                ac.close()
+            except Exception:
+                pass
 
     if subtitles:
         add_subtitles(output_file, output_file.replace('.mp4', '_subtitle.mp4'))
 
 
 def _create_video_from_timeline(storyboard_project, output_file, timeline, narration_track,
-                                subtitles=True):
+                                subtitles=True, style=None, bgm_file: Optional[str] = None):
     """Render silent image clips and attach one merged narration track."""
     storyboards = storyboard_project['storyboards']
     clips = []
+    overlays = []
+    cursor = 0.0
 
-    for entry in timeline:
+    video = get_video_config()
+    frame_size = (video["width"], video["height"])
+    bubble_mode = bool(style) and captions_for(style) == "bubble" and subtitles
+
+    for index, entry in enumerate(timeline):
         scene = storyboards[entry['scene_index']]
         image_file = scene.get('image')
         if not image_file or not os.path.exists(image_file):
@@ -232,54 +313,104 @@ def _create_video_from_timeline(storyboard_project, output_file, timeline, narra
             continue
 
         clip = ImageClip(image_file).set_duration(duration)
+        motion = motion_for(style, index) if style else scene.get('transition_type')
+        clip = _apply_motion(clip, motion)
 
-        transition_type = scene.get('transition_type')
-        if transition_type == 'zoom-in':
-            clip = zoom(clip)
-        elif transition_type == 'zoom-out':
-            clip = zoom(clip, mode='out')
+        if bubble_mode:
+            overlays.extend(
+                bubble_clips(
+                    scene.get('subtitles', ''), cursor, duration, index, frame_size
+                )
+            )
 
         clips.append(clip)
+        cursor += duration
 
     if not clips:
         raise RuntimeError("No clips were produced; cannot create the video.")
 
     final_clip = concatenate_videoclips(clips)
+    if overlays:
+        final_clip = CompositeVideoClip([final_clip] + overlays)
 
-    if narration_track and os.path.exists(narration_track):
-        narration_clip = AudioFileClip(narration_track)
-        # The timeline is measured from the same audio, so any gap here is a
-        # rounding remainder rather than a missing section of narration.
-        if final_clip.duration > narration_clip.duration + 0.05:
-            print(
-                f"Video is {final_clip.duration - narration_clip.duration:.2f}s longer "
-                "than the narration; the tail will be silent."
-            )
-        final_clip = final_clip.set_audio(narration_clip)
-    else:
-        print("No narration track was supplied; rendering the video silent.")
+    clips_to_close = list(clips)
+    audio_clips_to_close = []
 
-    final_clip.write_videofile(output_file, fps=get_video_config()["fps"])
+    try:
+        if narration_track and os.path.exists(narration_track):
+            narration_clip = AudioFileClip(narration_track)
+            audio_clips_to_close.append(narration_clip)
 
-    if subtitles:
+            # Check for BGM
+            bgm_clip = _load_bgm_clip(final_clip.duration, bgm_file)
+            if bgm_clip:
+                audio_clips_to_close.append(bgm_clip)
+                audio_track = CompositeAudioClip([narration_clip, bgm_clip])
+                audio_clips_to_close.append(audio_track)
+            else:
+                audio_track = narration_clip
+
+            # The timeline is measured from the same audio, so any gap here is a
+            # rounding remainder rather than a missing section of narration.
+            if final_clip.duration > narration_clip.duration + 0.05:
+                print(
+                    f"Video is {final_clip.duration - narration_clip.duration:.2f}s longer "
+                    "than the narration; the tail will be silent."
+                )
+            final_clip = final_clip.set_audio(audio_track)
+        else:
+            print("No narration track was supplied; rendering the video silent.")
+
+        final_clip.write_videofile(output_file, fps=get_video_config()["fps"])
+    finally:
+        try:
+            final_clip.close()
+        except Exception:
+            pass
+        for c in clips_to_close:
+            try:
+                c.close()
+            except Exception:
+                pass
+        for ac in audio_clips_to_close:
+            try:
+                ac.close()
+            except Exception:
+                pass
+
+    if subtitles and not overlays:
         add_subtitles(output_file, output_file.replace('.mp4', '_subtitle.mp4'))
 
 
 if __name__ == "__main__":
     from PIL import Image
 
+    from utils import get_preset, set_config_overrides
+
+    set_config_overrides(get_preset("youtube"))
     os.makedirs("data/_test/video", exist_ok=True)
+
+    subtitles = [
+        "He had just taken out Adolpho and Roberto.",
+        "\u201cWhat did you say was your name, friend?\u201d he asked.",
+        "I was shivering in spite of the fact that he had called me \u2018friend\u2019.",
+    ]
 
     images = []
     for index, color in enumerate([(24, 32, 64), (64, 32, 24), (24, 64, 48)], 1):
         path = f"data/_test/video/frame_{index}.png"
-        Image.new("RGB", (640, 360), color).save(path)
+        Image.new("RGB", (1280, 720), color).save(path)
         images.append(path)
 
     project = {
         "storyboards": [
-            {"scene_number": index, "image": path, "transition_type": "zoom-in"}
-            for index, path in enumerate(images, 1)
+            {
+                "scene_number": index,
+                "image": path,
+                "subtitles": text,
+                "transition_type": "zoom-in",
+            }
+            for index, (path, text) in enumerate(zip(images, subtitles), 1)
         ]
     }
     timeline = [
@@ -293,6 +424,11 @@ if __name__ == "__main__":
     ]
 
     _create_video_from_timeline(
-        project, "data/_test/video/demo.mp4", timeline, None, subtitles=False
+        project,
+        "data/_test/video/demo_storyboard.mp4",
+        timeline,
+        None,
+        subtitles=True,
+        style="storyboard",
     )
-    print("wrote data/_test/video/demo.mp4")
+    print("wrote data/_test/video/demo_storyboard.mp4")

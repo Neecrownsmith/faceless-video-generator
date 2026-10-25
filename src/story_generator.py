@@ -1,3 +1,4 @@
+from parse_json import extract_and_parse_json, strip_code_fences
 from utils import (
     call_openai_api,
     create_empty_storyboard,
@@ -27,6 +28,8 @@ CHARACTER_SCHEMA = {
                     "body_type": {"type": "string"},
                     "hair_style": {"type": "string"},
                     "accessories": {"type": "string"},
+                    "signature_outfit": {"type": "string"},
+                    "visual_anchor": {"type": "string"},
                 },
                 "required": [
                     "name",
@@ -37,6 +40,8 @@ CHARACTER_SCHEMA = {
                     "body_type",
                     "hair_style",
                     "accessories",
+                    "signature_outfit",
+                    "visual_anchor",
                 ],
                 "additionalProperties": False,
             },
@@ -78,33 +83,12 @@ STORYBOARD_SCHEMA = {
 
 
 def _strip_code_fences(text: str) -> str:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    return cleaned.strip()
+    return strip_code_fences(text)
 
 
 def parse_json_response(response: str) -> Optional[Dict[str, Any]]:
     """Parse a JSON object out of a model response."""
-    if not response:
-        return None
-
-    cleaned = _strip_code_fences(response)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError as e:
-            logging.error(f"Failed to parse JSON: {e}")
-    else:
-        logging.error("No JSON object found in the response")
-    return None
+    return extract_and_parse_json(response)
 
 
 def call_json_api(
@@ -231,12 +215,13 @@ def get_story_type_guidelines(story_type: str) -> str:
     return guidelines.format(story_type=story_type)
 
 
-def create_story_prompt(story_type: str, char_limit: Tuple[int, int]) -> str:
+def create_story_prompt(story_type: str, char_limit: Tuple[int, int], trailing_tag: str = "") -> str:
+    tag_instruction = f", followed by #{trailing_tag} as the last hashtag" if trailing_tag else ""
     base_prompt = f'''
     Create content based on the following guidelines:
 
     1. Title: Create an engaging and relevant title. Ensure they are unique and avoid repetition.
-    2. Description: Write a 100-150 character description that provides an overview of the content. Include 2-3 relevant hashtags, followed by #facelessvideos.app as the last hashtag.
+    2. Description: Write a 100-150 character description that provides an overview of the content. Include 2-3 relevant hashtags{tag_instruction}.
     3. Content: Generate the main content according to the specific guidelines below.
 
     {get_story_type_guidelines(story_type)}
@@ -293,21 +278,22 @@ def parse_story_response(response: str) -> Tuple[Optional[str], Optional[str], O
     return None, None, None
 
 
-def normalize_hashtags(description: str, story_type: str) -> str:
-    """Put the mapped hashtag first and #facelessvideos.app last.
-
-    The model sometimes repeats a tag or leaves an empty one behind, so the
-    list is cleaned up on the way through.
-    """
-    first_hashtag = STORY_TYPE_HASHTAGS[story_type].lstrip("#")
+def normalize_hashtags(description: str, story_type: str, trailing_tag: str = "") -> str:
+    """Put the mapped hashtag first and the configured trailing hashtag last."""
+    tag_map = {k.lower(): v.lstrip("#") for k, v in STORY_TYPE_HASHTAGS.items()}
+    first_hashtag = tag_map.get(story_type.lower(), re.sub(r"[^\w]", "", story_type).lower())
 
     desc_parts = description.split("#", 1)
+    trailing_clean = trailing_tag.lstrip("#").strip()
+
     if len(desc_parts) <= 1:
-        return f"{description} #{first_hashtag} #facelessvideos.app"
+        base_desc = description.strip()
+        trailer = f" #{trailing_clean}" if trailing_clean else ""
+        return f"{base_desc} #{first_hashtag}{trailer}".strip()
 
     desc_text = desc_parts[0].strip()
     tags = [tag.strip() for tag in desc_parts[1].split("#")]
-    tags = [tag for tag in tags if tag and tag != "facelessvideos.app"]
+    tags = [tag for tag in tags if tag and (not trailing_clean or tag.lower() != trailing_clean.lower())]
     ordered = [first_hashtag] + [
         tag for tag in tags if tag.lower() != first_hashtag.lower()
     ]
@@ -321,14 +307,17 @@ def normalize_hashtags(description: str, story_type: str) -> str:
             unique.append(tag)
 
     hashtags = " ".join(f"#{tag}" for tag in unique)
-    return f"{desc_text} {hashtags} #facelessvideos.app"
+    trailer = f" #{trailing_clean}" if trailing_clean else ""
+    return f"{desc_text} {hashtags}{trailer}".strip()
 
 
 def generate_story_and_title(client, story_type: str) -> Tuple[str, str, str]:
     config = load_config()
-    char_limit = (config['story_generation']['char_limit_min'], config['story_generation']['char_limit_max'])
+    story_cfg = config.get("story_generation", {})
+    char_limit = (story_cfg.get("char_limit_min", 600), story_cfg.get("char_limit_max", 700))
+    trailing_tag = story_cfg.get("trailing_hashtag", "")
 
-    prompt = create_story_prompt(story_type, char_limit)
+    prompt = create_story_prompt(story_type, char_limit, trailing_tag=trailing_tag)
 
     messages = [
         {
@@ -356,7 +345,7 @@ def generate_story_and_title(client, story_type: str) -> Tuple[str, str, str]:
         return None, None, None
 
     # Ensure the first hashtag is from the STORY_TYPE_HASHTAGS mapping
-    description = normalize_hashtags(description, story_type)
+    description = normalize_hashtags(description, story_type, trailing_tag=trailing_tag)
 
     return title, description, content
 
@@ -375,10 +364,12 @@ def generate_characters(client, story: str) -> List[Dict[str, str]]:
                     "ethnicity": "Character's Ethnicity",
                     "gender": "Character's Gender",
                     "age": "Character's Age",
-                    "facial_features": "Description of Character's facial features",
-                    "body_type": "Description of Character's body type",
-                    "hair_style": "Description of Character's hair style",
-                    "accessories": "Description of Character's accessories"
+                    "facial_features": "Description of Character's facial features (face shape, nose, eyes, beard/facial hair)",
+                    "body_type": "Description of Character's body type and physique",
+                    "hair_style": "Description of hair style and cut (e.g. clean buzz cut fade, neat dreadlocks, slicked back)",
+                    "accessories": "Description of consistent accessories (e.g. gold stud earring, watch, necklace)",
+                    "signature_outfit": "Signature outfit with exact colors and clothing pieces worn across all scenes (e.g. shirtless with black athletic shorts and black slide sandals; or blue colonial frock coat with gold buttons and white cravat)",
+                    "visual_anchor": "Concise 20-30 word visual character description locking facial features, skin tone, hair, and signature outfit for identical multi-scene animation continuity"
                 }},
                 ...
             ]
@@ -389,13 +380,13 @@ def generate_characters(client, story: str) -> List[Dict[str, str]]:
         - Specify the character's ethnicity if it's relevant and discernible from the story.
         - State the character's gender.
         - Specify the character's age or apparent age range.
-        - For facial features, include details about eyes, nose, mouth, chin, forehead, cheekbones, and overall face shape. Include any notable unique features like scars, birthmarks, or facial hair.
+        - For facial features, include details about eyes, nose, mouth, chin, face shape, and any facial hair (beard, mustache, stubble).
         - Describe the character's body type, including height and build.
         - For hair style, describe the color, length, style, and texture.
-        - For accessories, include only non-clothing items such as jewelry, glasses and watches that are consistently associated with the character.
+        - Define a consistent 'signature_outfit' (specific garments, colors, footwear) that this character wears throughout the animated story to ensure visual consistency across all frames.
+        - Provide a 'visual_anchor': A concise, highly specific 20-30 word visual prompt descriptor that uniquely defines this character's face, hair, skin tone, build, and signature outfit. This anchor will be injected into every image prompt so that diffusion models render the identical person in every scene.
         - Aim for concise but descriptive entries for each attribute.
         - Focus on permanent or long-term features, not on changeable expressions or temporary states.
-        - Do not include any descriptions of clothing or attire.
 
         Please provide only the JSON object, without any additional text.
         """
@@ -403,15 +394,13 @@ def generate_characters(client, story: str) -> List[Dict[str, str]]:
     messages = [
         {
             "role": "system",
-            "content": """You are an expert at analyzing stories and creating detailed, vivid character descriptions, focusing on overall appearance. Your skills include:
+            "content": """You are an expert character designer and art director for 2D animated series. Your skills include:
                 1. Extracting subtle character details from narrative context
-                2. Creating consistent and believable descriptions of characters
-                3. Focusing on permanent features and distinguishing attributes
-                4. Adapting descriptions to fit the story's genre and tone
+                2. Creating consistent and recognizable descriptions of characters
+                3. Designing signature outfits and distinctive visual anchors that stay consistent across animation frames
+                4. Adapting descriptions to fit the animation genre and tone
                 5. Balancing physical features with character essence
-                6. Translating character personalities into comprehensive physical attributes
-                7. Accurately estimating and describing characters' attributes based on story context
-                8. Avoiding any mention of clothing or attire in character descriptions"""
+                6. Ensuring character faces and costumes remain identical across multi-scene video generation"""
         },
         {"role": "user", "content": prompt},
     ]
@@ -431,7 +420,7 @@ def generate_characters(client, story: str) -> List[Dict[str, str]]:
     return []
 
 
-def generate_storyboard(client, title: str, story: str, story_type: str, character_names: List[str] = None) -> Dict[str, Any]:
+def generate_storyboard(client, title: str, story: str, story_type: str, character_names: Optional[List[str]] = None) -> Dict[str, Any]:
     config = load_config()
     max_scenes = config['storyboard']['max_scenes']
     timestamp = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
@@ -499,6 +488,7 @@ def generate_storyboard(client, title: str, story: str, story_type: str, charact
         - The narration is read continuously, so scene boundaries only decide where the picture changes. To reach {max_scenes}, split longer sentences across several scenes at clause boundaries - never in the middle of a clause or a word.
         - Keep each scene's subtitles to a short phrase (a few words) so the picture keeps changing.
         - Ensure that the scenes flow logically and capture the essence of the {story_type}.
+        - Character Consistency: In each scene description, ALWAYS explicitly mention which characters are present by their exact name (e.g. 'Kwame and Ayo stand...'). Keep their appearance and clothing consistent with their established signature outfit.
         - When using a character's name in possessive form (e.g., "Character's") in the description,
           surround it with double curly braces {{{{ }}}} if it's not referring to the character's appearance.
           For example: "{{{{Giovanni's}}}} workshop" or "The mysterious figure stood at the entrance of {{{{Giovanni's}}}} laboratory."

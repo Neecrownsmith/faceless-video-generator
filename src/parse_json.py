@@ -1,49 +1,50 @@
+"""JSON extraction utilities for LLM responses."""
+
 import json
+import logging
 import re
+from typing import Any, Dict, Optional
 
 
-def extract_and_parse_json2(response: str) -> dict:
-    # Remove leading and trailing backticks and "json" tag if present
-    cleaned_response = response.strip().strip("`").strip()
-    if cleaned_response.startswith("json"):
-        cleaned_response = cleaned_response[4:].strip()
+def strip_code_fences(text: str) -> str:
+    """Remove Markdown code fences such as ```json ... ```."""
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
 
+
+def extract_and_parse_json(response: str) -> Optional[Dict[str, Any]]:
+    """Extract and parse a JSON object or array out of a model response string.
+
+    Tries standard json.loads on stripped content first, then searches for the
+    outermost JSON object or array if commentary/fences are present.
+    """
+    if not response:
+        return None
+
+    cleaned = strip_code_fences(response)
     try:
-        storyboard_data = json.loads(cleaned_response)
-        return storyboard_data
-    except json.JSONDecodeError as e:
-        print(f"JSON Decode Error: {e}")
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
 
-
-def extract_and_parse_json(response: str) -> dict:
-    """
-    Extracts JSON from a string response and attempts to parse it.
-
-    Args:
-    response (str): The full response string, potentially containing non-JSON text.
-
-    Returns:
-    dict: Parsed JSON data if successful, empty dict if failed.
-    """
-    # Find the JSON part of the response
-    json_match = re.search(r"\{.*\}", response, re.DOTALL)
-
-    if json_match:
-        json_str = json_match.group()
+    # Find outermost object { ... }
+    obj_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if obj_match:
         try:
-            parsed_data = json.loads(json_str)
-            print("Successfully parsed JSON data.")
-            return parsed_data
+            return json.loads(obj_match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # Find outermost array [ ... ]
+    arr_match = re.search(r"\[.*\]", cleaned, re.DOTALL)
+    if arr_match:
+        try:
+            return json.loads(arr_match.group())
         except json.JSONDecodeError as e:
-            print(f"JSON Decode Error: {e}")
-            print(f"Failed to parse JSON: {json_str}")
-    else:
-        print("No JSON object found in the response")
+            logging.error(f"Failed to parse JSON array: {e}")
 
-    return {}
-
-
-if __name__ == "__main__":
-    print(extract_and_parse_json('Here: {"title": "A {curly} affair", "scenes": []}'))
-    print(extract_and_parse_json('```json\n{"title": "Fenced"}\n```'))
-    print(extract_and_parse_json("no json here"))
+    logging.error("No valid JSON found in response.")
+    return None

@@ -24,6 +24,7 @@ from story_generator import (
     generate_fun_facts_storyboard,
 )
 from utils import call_openai_api
+from video_creator import create_video
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -232,7 +233,12 @@ def test_video_from_images(script_dir, story_dir):
 
     print("\nCreating video from images...")
     create_video(
-        get_tts_client(), storyboard_project, video_path, audio_dir, voice_name
+        get_tts_client(),
+        storyboard_project,
+        video_path,
+        audio_dir,
+        voice_name,
+        style=storyboard_project.get("style"),
     )
 
     print(f"Video created: {video_path}")

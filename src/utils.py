@@ -251,7 +251,9 @@ def pick_story_type():
             print("Invalid input. Please enter a number.")
 
 def pick_image_style():
-    styles = ["photorealistic", "cinematic", "anime", "comic-book", "pixar-art"]
+    styles = list(get_style_config()["profiles"]) or [
+        "photorealistic", "cinematic", "anime", "comic-book", "pixar-art"
+    ]
     print("Choose an image style:")
     for i, style in enumerate(styles, 1):
         print(f"{i}. {style}")
@@ -340,6 +342,30 @@ def get_caption_config() -> Dict[str, Any]:
         "font_size": int(caption.get("font_size", 70)),
         "padding": int(caption.get("padding", 70)),
         "line_count": int(caption.get("line_count", 1)),
+    }
+
+
+def get_style_config() -> Dict[str, Any]:
+    """Look presets: prompt, palette, camera motion and caption mode."""
+    styles = load_config().get("styles", {})
+    bubble = {
+        "font": "Bangers.ttf",
+        "font_size": 42,
+        "padding": 30,
+        "max_chars": 110,
+        "min_chars": 45,
+        "max_width_ratio": 0.44,
+        "fill": "#ffffff",
+        "outline": "#111111",
+        "text_color": "#111111",
+        "outline_width": 4,
+        "gap_seconds": 0.12,
+    }
+    bubble.update(styles.get("bubble", {}))
+    return {
+        "default": styles.get("default", "storyboard"),
+        "profiles": styles.get("profiles", {}),
+        "bubble": bubble,
     }
 
 

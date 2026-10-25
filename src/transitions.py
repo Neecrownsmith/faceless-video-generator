@@ -84,6 +84,107 @@ def zoom(clip, mode="in", position="center", speed=3):
     return clip.fl(main)
 
 
+def pan(clip, direction="left", zoom_factor=1.15):
+    """Slow lateral drift, used for wide establishing shots.
+
+    The frame is pre-scaled so the move never exposes the background; the
+    affine matrix is a source to destination transform, which is what
+    `cv2.warpAffine` expects when `WARP_INVERSE_MAP` is not set.
+    """
+    duration = clip.duration or 1.0
+    scale = max(1.02, zoom_factor)
+
+    def main(getframe, t):
+        frame = getframe(t)
+        h, w = frame.shape[:2]
+        # A two pixel guard keeps bilinear sampling from bleeding the border in.
+        span_x = max(0.0, (scale - 1) * w - 2)
+        span_y = max(0.0, (scale - 1) * h - 2)
+        progress = min(1.0, max(0.0, t / duration))
+
+        if direction in ("left", "right"):
+            fraction_x = 1.0 - progress if direction == "left" else progress
+            fraction_y = 0.5
+        else:
+            fraction_x = 0.5
+            fraction_y = progress if direction == "down" else 1.0 - progress
+
+        matrix = np.array(
+            [
+                [scale, 0, -span_x * fraction_x],
+                [0, scale, -span_y * fraction_y],
+            ]
+        )
+        return cv2.warpAffine(frame, matrix, (w, h))
+
+    return clip.fl(main)
+
+
+def pop(clip, hold=0.45, amplitude=0.06):
+    """A quick punch-in when a panel appears, then a clean hold."""
+    def main(getframe, t):
+        frame = getframe(t)
+        if t >= hold:
+            return frame
+
+        h, w = frame.shape[:2]
+        progress = t / hold
+        if progress < 0.6:
+            offset = amplitude * (progress / 0.6)
+        else:
+            offset = amplitude * (1.0 - (progress - 0.6) / 0.4)
+        scale = 1.0 + offset
+
+        matrix = np.array(
+            [
+                [scale, 0, -(scale - 1) * w / 2],
+                [0, scale, -(scale - 1) * h / 2],
+            ]
+        )
+        return cv2.warpAffine(frame, matrix, (w, h))
+
+    return clip.fl(main)
+
+
+def bob(clip, amplitude=10, period=3.0, zoom_factor=1.06):
+    """A gentle float, for sticker style characters with no other motion."""
+    scale = max(1.02, zoom_factor)
+
+    def main(getframe, t):
+        frame = getframe(t)
+        h, w = frame.shape[:2]
+        room = max(0.0, (scale - 1) * h / 2 - 2)
+        drift = max(-room, min(room, amplitude * math.sin(2 * math.pi * t / period)))
+
+        matrix = np.array(
+            [
+                [scale, 0, -(scale - 1) * w / 2],
+                [0, scale, -(scale - 1) * h / 2 + drift],
+            ]
+        )
+        return cv2.warpAffine(frame, matrix, (w, h))
+
+    return clip.fl(main)
+
+
+def wipe(clip, duration=0.8, feather=3):
+    """Reveal the frame from white, left to right, like a drawing being inked."""
+    def main(getframe, t):
+        frame = getframe(t)
+        if t >= duration:
+            return frame
+
+        result = frame.copy()
+        h, w = frame.shape[:2]
+        edge = int(w * min(1.0, max(0.0, t / duration)))
+        result[:, edge:] = 255
+        if 0 < edge < w:
+            result[:, max(0, edge - feather) : edge] = 0
+        return result
+
+    return clip.fl(main)
+
+
 if __name__ == "__main__":
     os.makedirs("data/_test/transitions", exist_ok=True)
     Image.new("RGB", (640, 360), (28, 34, 58)).save(
@@ -95,6 +196,11 @@ if __name__ == "__main__":
         "zoom-out": lambda clip: zoom(clip, mode="out"),
         "fade": lambda clip: fade(clip, duration=0.5),
         "shake": lambda clip: shake(clip),
+        "pan-left": lambda clip: pan(clip, direction="left"),
+        "pan-right": lambda clip: pan(clip, direction="right"),
+        "pop": lambda clip: pop(clip),
+        "bob": lambda clip: bob(clip),
+        "wipe": lambda clip: wipe(clip),
     }
 
     for name, effect in effects.items():

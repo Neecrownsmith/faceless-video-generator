@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 
@@ -16,6 +17,9 @@ from utils import (
     get_preset,
     get_video_config,
     get_voice_list,
+    pick_image_style,
+    pick_story_type,
+    pick_voice_name,
     set_config_overrides,
 )
 from story_generator import (
@@ -34,29 +38,90 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(os.path.dirname(script_dir), ".env"))
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Faceless Video Generator: automated AI multimedia production."
+    )
+    parser.add_argument(
+        "--preset",
+        choices=["youtube", "shorts"],
+        default="youtube",
+        help="Video output preset (default: youtube)",
+    )
+    parser.add_argument(
+        "--story-type", "-t",
+        default="Mystery",
+        help="Story genre or topic (e.g. Mystery, Scary, Bedtime, Philosophy, Fun Facts)",
+    )
+    parser.add_argument(
+        "--style", "-s",
+        default="storyboard",
+        help="Visual look preset (storyboard, noir, flat, chibi, doodle, cinematic, anime)",
+    )
+    parser.add_argument(
+        "--scenes", "-n",
+        type=int,
+        default=None,
+        help="Maximum scenes to generate (defaults to preset count)",
+    )
+    parser.add_argument(
+        "--voice", "-v",
+        default=None,
+        help="TTS voice persona override",
+    )
+    parser.add_argument(
+        "--no-images",
+        action="store_true",
+        help="Skip image generation (dry run / audio only)",
+    )
+    parser.add_argument(
+        "--bgm",
+        default=None,
+        help="Path to an optional background audio/music file",
+    )
+    parser.add_argument(
+        "--interactive", "-i",
+        action="store_true",
+        help="Prompt interactively to choose story type, style, and voice",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    preset = "youtube"
-    story_type = "Mystery"
-    image_style = "cinematic"
-    max_scenes = 24
-    no_images = False
+    args = parse_args()
+
+    preset = args.preset
+    preset_cfg = get_preset(preset)
+    max_scenes = args.scenes or preset_cfg.get("storyboard", {}).get("max_scenes", 24)
+
+    if args.interactive:
+        story_type = pick_story_type()
+        image_style = pick_image_style()
+        voice_name = pick_voice_name()
+    else:
+        story_type = args.story_type
+        image_style = args.style
+        available_voices = get_voice_list()
+        voice_name = args.voice if args.voice else (available_voices[0] if available_voices else "alloy")
+
+    no_images = args.no_images
 
     set_config_overrides(
-        deep_merge(get_preset(preset), {"storyboard": {"max_scenes": max_scenes}})
+        deep_merge(preset_cfg, {"storyboard": {"max_scenes": max_scenes}})
     )
 
     print(f"Active providers: {describe_providers()}")
     video = get_video_config()
     print(
         f"Output: {video['width']}x{video['height']} @ {video['fps']}fps, "
-        f"up to {max_scenes} scenes"
+        f"up to {max_scenes} scenes | Preset: {preset} | Style: {image_style}"
     )
 
-    voice_name = get_voice_list()[0]
     client = get_llm_client()
     tts_client = get_tts_client()
     audio_extension = get_audio_extension()
 
+    print(f"\nGenerating story for topic '{story_type}'...")
     title, description, story = generate_story_and_title(client, story_type)
     if story is None or title is None:
         raise SystemExit("Failed to generate a story and title.")
@@ -130,6 +195,7 @@ if __name__ == "__main__":
             )
 
     storyboard_project["narration"] = narration
+    storyboard_project["style"] = image_style
 
     print("\nGenerating images for each scene...")
     if no_images:
@@ -165,5 +231,7 @@ if __name__ == "__main__":
         voice_name,
         timeline=timeline,
         narration_track=narration.get("track") if narration else None,
+        style=image_style,
+        bgm_file=args.bgm,
     )
     print(f"Video created: {video_path}")

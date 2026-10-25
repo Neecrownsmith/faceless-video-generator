@@ -144,7 +144,13 @@
   },
   "story_generation": {
     "char_limit_min": 600,
-    "char_limit_max": 700
+    "char_limit_max": 700,
+    "trailing_hashtag": "facelessvideos.app"
+  },
+  "bgm": {
+    "enabled": false,
+    "volume": 0.15,
+    "track": ""
   },
   "storyboard": {
     "max_scenes": 14
@@ -193,6 +199,72 @@
     "font_size": 70,
     "padding": 70,
     "line_count": 1
+  },
+  "styles": {
+    "default": "storyboard",
+    "bubble": {
+      "font": "Bangers.ttf",
+      "font_size": 42,
+      "padding": 30,
+      "max_chars": 110,
+      "min_chars": 45,
+      "max_width_ratio": 0.44,
+      "fill": "#ffffff",
+      "outline": "#111111",
+      "text_color": "#111111",
+      "outline_width": 4,
+      "gap_seconds": 0.12
+    },
+    "profiles": {
+      "storyboard": {
+        "prompt": "flat vector cartoon illustration, thick uniform black outlines, flat pastel colour fills, simple geometric shapes, plain uncluttered background, characters staged side on, clear silhouettes",
+        "palette": "flat",
+        "motion": ["pop", "pan-left", "pop", "pan-right"],
+        "captions": "bubble"
+      },
+      "noir": {
+        "prompt": "graphic novel ink illustration, sepia monochrome duotone, heavy black spot shadows, cross hatching, dramatic backlit silhouettes, wide symmetrical composition, period clothing",
+        "palette": "sepia",
+        "motion": ["pan-left", "pan-right", "zoom-in"],
+        "captions": "word"
+      },
+      "flat": {
+        "prompt": "flat vector illustration, bright saturated flat colour fills, no outlines, clean geometric shapes, simple stylised figures, minimal background shapes, infographic poster style",
+        "palette": "vivid",
+        "motion": ["zoom-in", "pan-left", "zoom-out"],
+        "captions": "word"
+      },
+      "chibi": {
+        "prompt": "chibi character art, large head and small body, soft painterly shading, clean sticker style, plain pastel background, expressive face",
+        "palette": "soft",
+        "motion": ["bob", "pop"],
+        "captions": "word"
+      },
+      "doodle": {
+        "prompt": "minimalist doodle drawing, thin hand drawn black ink lines, white background, one muted accent colour fill, simple stick figure people, lots of empty space",
+        "palette": "mono",
+        "motion": ["wipe", "pop"],
+        "captions": "word"
+      },
+      "afro-cartoon": {
+        "prompt": "modern 2D digital cartoon animation, viral web series cartoon style, crisp uniform black outlines, smooth cel shading, vibrant warm daylight, rich saturated colors, expressive character face, detailed clean anatomy, clean suburban street background, modern stylized cartoon art, high quality animation frame",
+        "palette": "warm",
+        "motion": ["pan-left", "zoom-in", "pop", "pan-right"],
+        "captions": "word"
+      },
+      "stickman": {
+        "prompt": "minimalist stickman cartoon illustration, clean smooth black line art stick figure, simple round white head with two dot eyes and line mouth, colored oval bean body, stick arms and legs, clean plain white background, expressive pose, funny cartoon stickman",
+        "palette": "mono",
+        "motion": ["pop", "bob", "pan-left"],
+        "captions": "word"
+      },
+      "storybook": {
+        "prompt": "childrens storybook cartoon illustration, cute stylized proportion, large expressive eyes, rounded facial features, clean detailed character outlines, warm rich digital colors, storybook character art, clean soft background",
+        "palette": "soft",
+        "motion": ["bob", "zoom-in", "pop"],
+        "captions": "word"
+      }
+    }
   },
   "presets": {
     "shorts": {
